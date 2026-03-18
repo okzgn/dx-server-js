@@ -215,6 +215,7 @@ const errorState = 'error';
 const updateState = 'update';
 const startingState = 'starting';
 
+let watcherInterval;
 let executionLock = Promise.resolve();
 let entryPointCache = '';
 let cleanBuiltStateFilesTimeout;
@@ -976,24 +977,32 @@ function initializeConnectedIP(object, req, defaultConfig){
     return ip;
 }
 
-function filesWatching(targets, fn, options){
-    if(!chokidar){ chokidar = require('chokidar'); }
+function startWatching(targets, fn, options, error){
     let debounce;
     let watcher = chokidar.watch(targets, Object.assign({ depth: fileWatchingSubFoldersDepth, persistent: true }, options || { ignored: customIgnoredOnWatching }));
-    
     watcher.on('all', function(event, _path){
         clearTimeout(debounce);
         debounce = setTimeout(function(){
             fn(event, _path);
         }, 100);
     });
+    if(typeof error === 'function'){
+        watcher.on('error', function(){
+            watcher.close();
+            error(watcher);
+        });
+    }
+}
 
-    let watcherInterval;
-    watcher.on('error', function(){
-        watcher.close();
-        Console.error('Default watcher failed, using polling instead. NOT AVAILABLE COMMANDS: "--watch", "--watch-command".');
-        clearInterval(watcherInterval);
-        watcherInterval = setInterval(function(){ fn(null, null); }, pollingInterval);
+function filesWatching(targets, fn, options){
+    if(!chokidar){ chokidar = require('chokidar'); }
+    startWatching(targets, fn, options, function(){
+        Console.error('Default watcher failed. Retrying...');
+        startWatching(targets, fn, options, function(){
+            Console.error('Using polling instead. NOT AVAILABLE COMMANDS: "--watch", "--watch-command".');
+            clearInterval(watcherInterval);
+            watcherInterval = setInterval(function(){ fn(null, null); }, pollingInterval);
+        });
     });
 }
 
