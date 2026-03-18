@@ -1110,7 +1110,19 @@ async function initDxServerModes(){
     Console.info('Server mode:', serverMode);
 
     const helmet = require('helmet');
-    app.use(helmet());
+    const helmetConfig = {};
+    if(devModeON){
+        helmetConfig.contentSecurityPolicy = {
+            directives: {
+                "default-src": ["'self'"],
+                "script-src": ["'self'", "'unsafe-inline'"],
+                "style-src": ["'self'", "'unsafe-inline'"],
+                "img-src": ["'self'", "data:", "blob:"],
+                "connect-src": ["'self'", "*"]
+            }
+        };
+    }
+    app.use(helmet(helmetConfig));
 
     const cors = require('cors');
     app.use(cors({ origin: true, credentials: true }));

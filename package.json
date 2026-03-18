@@ -1,9 +1,11 @@
 {
   "name": "dx-server-js",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "A high-performance, lightweight development/production server and build tool designed for modern frontend applications. It provides essential developer experience (DX) features out of the box, including hot-reloading, Single Page Application (SPA) routing, automatic SSL generation, and a unique Build Ingestion system to monitor your build processes directly from the browser.",
   "keywords": [
     "DX",
+    "Developer",
+    "Experience",
     "HTTP-Server",
     "Server",
     "Build-tool",
