@@ -1,0 +1,43 @@
+{
+  "name": "dx-server-js",
+  "version": "2.2.0",
+  "description": "A high-performance, lightweight development/production server and build tool designed for modern frontend applications. It provides essential developer experience (DX) features out of the box, including hot-reloading, Single Page Application (SPA) routing, automatic SSL generation, and a unique Build Ingestion system to monitor your build processes directly from the browser.",
+  "keywords": [
+    "DX",
+    "HTTP-Server",
+    "Server",
+    "Build-tool",
+    "SPA",
+    "Hot-reload",
+    "SSL"
+  ],
+  "license": "MIT",
+  "author": "OKZGN",
+  "bin": {
+    "dx-server-js": "./bin/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/okzgn/dx-server-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/okzgn/dx-server-js/issues"
+  },
+  "homepage": "https://github.com/okzgn/dx-server-js#readme",
+  "engines": {
+    "node": ">=18.3.0"
+  },
+  "type": "commonjs",
+  "main": "./bin/index.js",
+  "dependencies": {
+    "chalk": "~4.1.2",
+    "chokidar": "~4.0.3",
+    "compression": "~1.8.1",
+    "cors": "~2.8.6",
+    "express": "~5.2.1",
+    "helmet": "~8.1.0",
+    "kill-port": "~2.0.1",
+    "mkcert": "~3.2.0",
+    "open": "~11.0.0"
+  }
+}
