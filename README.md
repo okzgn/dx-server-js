@@ -15,7 +15,7 @@
 
 ## Requirements
 
-*   **Node.js:** v18.3.0 or higher.
+*   **Node.js:** v20.19.0 or higher.
 
 ## Installation
 
