@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.2.0';
+const DXServerVersion = '2.2.4';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 18) || (major == 18 && minor < 3)){
@@ -979,7 +979,7 @@ function initializeConnectedIP(object, req, defaultConfig){
 
 function startWatching(targets, fn, options, error){
     let debounce;
-    let watcher = chokidar.watch(targets, Object.assign({ depth: fileWatchingSubFoldersDepth, persistent: true }, options || { ignored: customIgnoredOnWatching }));
+    let watcher = chokidar.watch(targets, Object.assign({ depth: fileWatchingSubFoldersDepth, persistent: true }, options || { ignored: [ browserOpenReferenceFilePath, ...customIgnoredOnWatching ] }));
     watcher.on('all', function(event, _path){
         clearTimeout(debounce);
         debounce = setTimeout(function(){
@@ -1140,6 +1140,7 @@ async function initDxServerModes(){
 
     if(devModeON){
         let statusHandlerMessage = 'Connect to "' + localhost + '"';
+
         let statusHandlerWritesConfig = {
             prefix: chalk.bold('Notice:'),
 
@@ -1151,7 +1152,62 @@ async function initDxServerModes(){
             always_type: 'warn'
         };
 
-        filesWatching(entryPointFilePath, async function(watcherEvent){
+        let statusWritesConfig = {
+            prefix: startUpdatesStatusEndpoint,
+
+            last: 40,
+            last_message: 'Frontend build error.',
+            last_callback: async function(){
+                await writeFile(errorReferenceFilePath, Date.now() + ''); 
+            },
+
+            very_slow: 30,
+            very_slow_message: 'Frontend cannot connect...',
+
+            slow: 20,
+            slow_message: 'Frontend connecting is taking extremely long...',
+
+            normal: 10,
+            normal_message: 'Frontend connecting is taking too long...',
+
+            fast: 5,
+            fast_message: 'Frontend connecting... Something slow...',
+
+            first: 1,
+            first_message: 'Frontend connecting...',
+        };
+
+        connectedWithHotReload[localhost] = {
+            time: Date.now(),
+            ...statusHandlerWritesConfig
+        }
+
+        app.get(startUpdatesStatusEndpoint, async function(req, res){
+            let connectedIP;
+            try {
+                connectedIP = initializeConnectedIP(connectedWithHotReload, req, statusHandlerWritesConfig);
+                connectedWithHotReload[connectedIP].connections.add(res);
+            }
+            catch(e){
+                Console.error(startUpdatesStatusEndpoint, 'error:', e.message);
+                return res.status(400).end();
+            }
+
+            if(!connectedWithHotReload[connectedIP].heartbeat_interval){ writeSlowly(statusWritesConfig); }
+            else { connectedWithHotReload[connectedIP].counter = 0; }
+
+            await writeFile(browserOpenReferenceFilePath, Date.now() + '', true);
+            res.status(200).end();
+        });
+
+        let lastInodeReference;
+        let lastStatusReference;
+        let firstErrorReference;
+        let lastErrorReference;
+        let lastMessageErrorReference;
+        let builtErrorReference;
+
+        async function disconnectionWatcher(watcherEvent){
             for(let ip of Object.keys(connectedWithHotReload)){
                 let ipLastTimeConnected = connectedWithHotReload[ip].time;
                 let timeDiffing = Date.now() - ipLastTimeConnected;
@@ -1193,66 +1249,9 @@ async function initDxServerModes(){
                     }
                 }
             }
-        });
-
-        connectedWithHotReload[localhost] = {
-            time: Date.now(),
-            ...statusHandlerWritesConfig
         }
 
-        let statusWritesConfig = {
-            prefix: startUpdatesStatusEndpoint,
-
-            last: 40,
-            last_message: 'Frontend build error.',
-            last_callback: async function(){
-                await writeFile(errorReferenceFilePath, Date.now() + ''); 
-            },
-
-            very_slow: 30,
-            very_slow_message: 'Frontend cannot connect...',
-
-            slow: 20,
-            slow_message: 'Frontend connecting is taking extremely long...',
-
-            normal: 10,
-            normal_message: 'Frontend connecting is taking too long...',
-
-            fast: 5,
-            fast_message: 'Frontend connecting... Something slow...',
-
-            first: 1,
-            first_message: 'Frontend connecting...',
-        };
-
-        app.get(startUpdatesStatusEndpoint, async function(req, res){
-            let connectedIP;
-            try {
-                connectedIP = initializeConnectedIP(connectedWithHotReload, req, statusHandlerWritesConfig);
-                connectedWithHotReload[connectedIP].connections.add(res);
-            }
-            catch(e){
-                Console.error(startUpdatesStatusEndpoint, 'error:', e.message);
-                return res.status(400).end();
-            }
-
-            if(!connectedWithHotReload[connectedIP].heartbeat_interval){ writeSlowly(statusWritesConfig); }
-            else { connectedWithHotReload[connectedIP].counter = 0; }
-
-            await writeFile(browserOpenReferenceFilePath, Date.now() + '', true);
-            res.status(200).end();
-        });
-
-        let lastInodeReference;
-        let lastStatusReference;
-        let firstErrorReference;
-        let lastErrorReference;
-        let lastMessageErrorReference;
-        let builtErrorReference;
-        let foldersToWatch = [coreFolder, publicFolder, watchFolder];
-        filesWatching(foldersToWatch, async function(event, _path){
-            executeWatchCommand(event, _path);
-
+        async function buildingWatcher(){
             try {
                 let errorReference = await fileExists(errorReferenceFilePath);
                 if(errorReference){
@@ -1307,7 +1306,15 @@ async function initDxServerModes(){
                 lastErrorReference = Date.now();
                 lastMessageErrorReference = message;
             }
-        }, { ignored: [browserOpenReferenceFilePath, ...customIgnoredOnWatching ] });
+        }
+
+        let filesAndFoldersToWatch = [coreFolder, publicFolder, watchFolder, entryPointFilePath];
+
+        filesWatching(filesAndFoldersToWatch, async function(watcherEvent, _path){
+            executeWatchCommand(watcherEvent, _path);
+            await disconnectionWatcher(watcherEvent);
+            await buildingWatcher();
+        });
 
         app.get(updateStatusEndpoint, async function(req, res){
             let connectedIP;
@@ -1692,7 +1699,7 @@ async function analizeChunks(chunks){
 }
 
 function executeWatchCommand(event, _path){
-    if(!_path || !watchCommandModeON){ return; }
+    if(!watchCommandModeON || !event || !_path){ return; }
 
     let absolutePathChanged = path.resolve(_path);
     let isInsideWatchFolder = absolutePathChanged.startsWith(path.resolve(watchFolder));
