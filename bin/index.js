@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.2.4';
+const DXServerVersion = '2.2.5';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 18) || (major == 18 && minor < 3)){
@@ -542,7 +542,7 @@ switch(serverMode){
             await cleanBuiltStateFiles();
             await writeFile(builtReferenceFilePath, compilationState);
             await writeFile(errorReferenceFilePath, '');
-            
+
             process.stdin.setEncoding('utf8');
 
             let chunks = '';
@@ -592,7 +592,7 @@ process.on(sigint, function(){ shutdown(sigint); });
 async function shutdown(kind){
     Console.blue('Shutting down...');
     let endPrefix = 'END';
-    
+
     stopWatchCommand();
 
     try {
@@ -757,7 +757,7 @@ async function writeSlowly(options){
     let isTimeToConsoleInfoSlow = (options.counter % 8) === 0;
     let isTimeToConsoleInfoVerySlow = (options.counter % 10) === 0;
     let isTimeToConsoleInfoLast = (options.counter % 12) === 0;
-    
+
     if(options.last && options.counter > options.last){
         if(typeof options.last_callback === 'function'){ await options.last_callback(); }
         if(typeof options.last_callback_done === 'undefined'){ options.last_callback_done = 0; }
@@ -1025,6 +1025,10 @@ function writeToSuscribers(suscribers, message, mode){
 }
 
 function writeToSuscriber(connection, message, connections, mode){
+    if(connection.writableEnded || connection.destroyed){
+        if(connections){ connections.delete(connection); }
+        return false;
+    }
     try {
         connection.write(`data: ` + String(message) + `\n\n`);
         if(mode !== false){ return true; }
@@ -1111,6 +1115,14 @@ function commaSeparatedKeywordsList(keywords, format){
     return keywords;
 }
 
+function addSuscriberConnection(ip, res, connectionsMap){
+    connectionsMap[ip].connections.add(res);
+    res.on('error', function(e){
+        Console.warn('Connection stream error:', e.message);
+        connectionsMap[ip].connections.delete(res);
+    });
+}
+
 async function initDxServerModes(){
     await loadOpen();
     await createMainSubFolders();
@@ -1135,7 +1147,6 @@ async function initDxServerModes(){
 
     const cors = require('cors');
     app.use(cors({ origin: true, credentials: true }));
-
     app.use(express.json({ limit: langJSONLimit }));
 
     if(devModeON){
@@ -1158,7 +1169,7 @@ async function initDxServerModes(){
             last: 40,
             last_message: 'Frontend build error.',
             last_callback: async function(){
-                await writeFile(errorReferenceFilePath, Date.now() + ''); 
+                await writeFile(errorReferenceFilePath, Date.now() + '');
             },
 
             very_slow: 30,
@@ -1186,7 +1197,7 @@ async function initDxServerModes(){
             let connectedIP;
             try {
                 connectedIP = initializeConnectedIP(connectedWithHotReload, req, statusHandlerWritesConfig);
-                connectedWithHotReload[connectedIP].connections.add(res);
+                addSuscriberConnection(connectedIP, res, connectedWithHotReload);
             }
             catch(e){
                 Console.error(startUpdatesStatusEndpoint, 'error:', e.message);
@@ -1275,7 +1286,7 @@ async function initDxServerModes(){
                         await cleanBuiltStateFiles();
                     }
                 }
-                
+
                 let indexReference = await stat(versionReferenceFilePath);
                 if(indexReference){
                     let status = (lastInodeReference === indexReference.mtimeMs ? lastInodeReference : updateState);
@@ -1320,7 +1331,7 @@ async function initDxServerModes(){
             let connectedIP;
             try {
                 connectedIP = initializeConnectedIP(connectedWithHotReload, req, statusHandlerWritesConfig);
-                connectedWithHotReload[connectedIP].connections.add(res);
+                addSuscriberConnection(connectedIP, res, connectedWithHotReload);
             }
             catch(e){
                 Console.error(updateStatusEndpoint, 'error:', e.message);
@@ -1362,7 +1373,7 @@ async function initDxServerModes(){
             try {
                 let folderToSave = path.join(langFolder, path.basename(path.normalize(req.body.dir)));
                 let fileToSave = path.join(folderToSave, path.basename(path.normalize(req.body.code)) + '.json');
-                
+
                 if(!fileToSave.startsWith(path.resolve(langFolder))){
                     res.status(403).end();
                     return;
@@ -1432,6 +1443,34 @@ async function initDxServerModes(){
 
         return res.status(200).send(dxDevModeScript(req.ip));
     });
+
+    const customMiddlewareFileName = 'dx-server.middleware.js';
+    const customMiddlewareFilePath = path.join(mainFolder, customMiddlewareFileName);
+
+    if (await fileExists(customMiddlewareFilePath)) {
+        Console.info('Loading custom middleware from:', customMiddlewareFileName);
+
+        app.use(function(req, res, next) {
+            if (req.path.startsWith('/dx-')) {
+                return next();
+            }
+            try {
+                // Clean cache to Hot-Reload the middleware if Dev mode is ON
+                if (devModeON) {
+                    delete require.cache[require.resolve(customMiddlewareFilePath)];
+                }
+
+                const userMiddleware = require(customMiddlewareFilePath);
+
+                if (typeof userMiddleware === 'function') {
+                    return userMiddleware(req, res, next);
+                }
+            } catch (e) {
+                Console.error('Custom middleware error:', e.message);
+            }
+            next();
+        });
+    }
 
     function clearIPFromControlMap(clearLimit){
         clearLimit = (clearLimit === true) ? 1 : (isNaN(clearLimit) ? (tryToRedirectOverflowIPsCount >= 2 ? Math.round(tryToRedirectOverflowIPsCount / 2) : 0) : clearLimit);
@@ -1606,7 +1645,7 @@ ${dxDefaultHTMLHead(ipFrom)}
         else {
             closeAndExit = false;
         }
-        
+
         if(closeAndExit){
             server.close();
             process.exit(1);

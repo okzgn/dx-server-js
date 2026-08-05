@@ -12,6 +12,7 @@
 *   🌍 **Language Management:** Built-in secure endpoint (`/dx-lang`) to update translation JSON files dynamically.
 *   🔄 **Watch Commands:** Execute custom CLI commands (like linters, bundlers, compilers) automatically when files change.
 *   🚪 **Auto Port-Killing:** Automatically frees up the requested port if it's already in use.
+*   🔌 **Custom Middleware Support:** Drop a `dx-server.middleware.js` file into your project root to handle custom HTTP headers, route rules, or API mocking, using Express syntax. Compatible with hot-reload.
 
 ## Requirements
 
@@ -45,7 +46,7 @@ npx dx-server-js --dev
 ### 🚀 Server Modes
 | Flag | Description |
 | :--- | :--- |
-| `--dev` | **(Default)** Enables hot-reload, caching disabled, and activates the `/dx-lang` endpoint. |
+| `--dev` | **(Default)** Enables hot-reload, caching disabled, custom middleware hot-reload, and activates the `/dx-lang` endpoint. |
 | `--prod` | Disables hot-reload and lang endpoints. Enables gzip compression and static file caching. |
 | `--built` | Enables **Build Ingestion** mode to monitor another process's `stdout` piped into DX Server. |
 | `--ingest` | Enables *only* ingestion (does not start the HTTP server). Useful when combined with `--watch-command`. |
@@ -144,9 +145,32 @@ fetch('http://localhost/dx-lang', {
 DX Server is optimized for Single Page Applications with a highly performant in-memory cache system. 
 When a request hits the server, a custom middleware evaluates it before serving static files:
 1. It checks the request path and the `Accept` header.
-2. If the request is looking for an asset (`image/*`, `css`, `js`, `json`), it bypasses the interceptor and continues to `express.static`. If the asset is missing, it serves the `--fallback` file (e.g., `404.html`) with a `404 Not Found` status.
+2. If the request is looking for an asset (`image/*`, `css`, `js`, `json`), it bypasses the interceptor and continues static serving. If the asset is missing, it serves the `--fallback` file (e.g., `404.html`) with a `404 Not Found` status.
 3. If the request accepts `html` (a client-side route navigation), it intercepts the request.
 4. It reads `index.html`, injects the hot-reload script, and **caches the result in memory**. It will serve this cached version instantly on subsequent requests, only re-reading the file if its modification time changes.
+
+### 5. Custom Server Middleware (`dx-server.middleware.js`)
+DX Server allows you to extend its functionality by placing a `dx-server.middleware.js` file in your project root using Express syntax. This is useful for adding custom HTTP response headers, CORS policies, request logging, or mocking API endpoints.
+
+**Example `dx-server.middleware.js`:**
+```javascript
+module.exports = function customMiddleware(req, res, next) {
+  // Add custom headers to specific API routes
+  if (req.path.startsWith('/api')) {
+    res.setHeader('X-Custom-Header', 'MyValue');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+
+  // Always pass control to the next middleware/static handler
+  next();
+};
+```
+
+**Key Features of Custom Middleware:**
+*   **Zero Configuration:** DX Server automatically detects and loads `dx-server.middleware.js` at startup if present.
+*   **Hot-Reloadable:** In `--dev` mode, Node's `require.cache` is automatically cleared for this file on every request. You can modify your middleware on the fly without restarting `dx-server`.
+*   **Protected Core:** Internal DX Server endpoints (`/dx-*` such as `/dx-update` or `/dx-client.js`) automatically bypass your custom middleware. This ensures that custom errors or unhandled redirects in user code will never break core features like Hot-Reloading.
+*   **Safe Execution:** User middleware runs inside a `try...catch` boundary. Any unhandled exception is logged to the terminal without crashing the server process.
 
 ### 💡 Pro Tip: Smart HTTP Status Detection
 DX Server includes an intelligent feature for custom fallbacks: **it automatically detects the HTTP status code from your filename.**
@@ -165,6 +189,7 @@ When running, DX Server creates a `dx-server` folder in your project root to man
 *   `dx-server/_built.tmp`: Tracks the current build state (`compilation`, `built`, `error`).
 *   `dx-server/_error.tmp`: Stores the latest build error message to serve to the browser.
 *   `dx-server/_browserOpen.tmp`: Prevents opening multiple browser tabs on rapid restarts.
+*   `dx-server.middleware.js`: Optional custom middleware in your project root.
 
 *Note: It is recommended to add `dx-server/` to your `.gitignore`.*
 
