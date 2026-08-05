@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.2.5';
+const DXServerVersion = '2.2.6';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 18) || (major == 18 && minor < 3)){
@@ -1319,7 +1319,10 @@ async function initDxServerModes(){
             }
         }
 
-        let filesAndFoldersToWatch = [coreFolder, publicFolder, watchFolder, entryPointFilePath];
+        const customMiddlewareFileName = 'dx-server.middleware.js';
+        const customMiddlewareFilePath = path.join(mainFolder, customMiddlewareFileName);
+
+        let filesAndFoldersToWatch = [coreFolder, publicFolder, watchFolder, entryPointFilePath, customMiddlewareFilePath];
 
         filesWatching(filesAndFoldersToWatch, async function(watcherEvent, _path){
             executeWatchCommand(watcherEvent, _path);
@@ -1443,9 +1446,6 @@ async function initDxServerModes(){
 
         return res.status(200).send(dxDevModeScript(req.ip));
     });
-
-    const customMiddlewareFileName = 'dx-server.middleware.js';
-    const customMiddlewareFilePath = path.join(mainFolder, customMiddlewareFileName);
 
     if (await fileExists(customMiddlewareFilePath)) {
         Console.info('Loading custom middleware from:', customMiddlewareFileName);
