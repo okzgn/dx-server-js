@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.2.6';
+const DXServerVersion = '2.2.7';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 18) || (major == 18 && minor < 3)){
@@ -130,6 +130,9 @@ let maxAgeCache = defaultMaxAgeCache;
 const fallbackFileName = '404.html';
 let fallbackStatus = 404;
 let fallbackFilePath = path.join(publicFolder, fallbackFileName);
+
+const fallbackCustomMiddlewareFileName = 'dx-server.middleware.js';
+let customMiddlewareFilePath = path.join(mainFolder, fallbackCustomMiddlewareFileName);
 
 let connectedWithHotReload = {};
 
@@ -1318,9 +1321,6 @@ async function initDxServerModes(){
                 lastMessageErrorReference = message;
             }
         }
-
-        const customMiddlewareFileName = 'dx-server.middleware.js';
-        const customMiddlewareFilePath = path.join(mainFolder, customMiddlewareFileName);
 
         let filesAndFoldersToWatch = [coreFolder, publicFolder, watchFolder, entryPointFilePath, customMiddlewareFilePath];
 
