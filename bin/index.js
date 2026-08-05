@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.2.7';
+const DXServerVersion = '2.2.8';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 18) || (major == 18 && minor < 3)){
@@ -132,6 +132,7 @@ let fallbackStatus = 404;
 let fallbackFilePath = path.join(publicFolder, fallbackFileName);
 
 const fallbackCustomMiddlewareFileName = 'dx-server.middleware.js';
+let customMiddlewareFileName = fallbackCustomMiddlewareFileName;
 let customMiddlewareFilePath = path.join(mainFolder, fallbackCustomMiddlewareFileName);
 
 let connectedWithHotReload = {};
