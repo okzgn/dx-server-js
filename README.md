@@ -5,6 +5,7 @@
 ## Key Features
 
 *   ⚡ **Hot-Reloading:** Automatic browser refresh on file changes via Server-Sent Events (SSE).
+*   🍦 **Vanilla / No-Bundler Mode:** Instant hot-reloading on any file edit (HTML, CSS, JS) without requiring a bundler, build step, or touching `index.html`.
 *   🧭 **SPA Support:** Smart fallback routing. Serves `index.html` automatically for client-side non static asset routes.
 *   🛠️ **Build Ingestion:** Pipe your bundler's `stdout` directly to DX Server. It analyzes the logs to show real-time build states (compiling, success, error) in the browser.
 *   🔒 **Zero-Config SSL:** Automatic self-signed SSL certificate generation using `mkcert`.
@@ -50,6 +51,7 @@ npx dx-server-js --dev
 | `--prod` | Disables hot-reload and lang endpoints. Enables gzip compression and static file caching. |
 | `--built` | Enables **Build Ingestion** mode to monitor another process's `stdout` piped into DX Server. |
 | `--ingest` | Enables *only* ingestion (does not start the HTTP server). Useful when combined with `--watch-command`. |
+| `--no-bundler` | Enables **Vanilla / No-Bundler mode**. Reloads the browser immediately on any file change (HTML, CSS, JS) and supports multi-page websites. |
 
 ### ⚙️ General Settings
 | Flag | Default | Description |
@@ -171,6 +173,17 @@ module.exports = function customMiddleware(req, res, next) {
 *   **Hot-Reloadable:** In `--dev` mode, Node's `require.cache` is automatically cleared for this file on every request. You can modify your middleware on the fly without restarting `dx-server`.
 *   **Protected Core:** Internal DX Server endpoints (`/dx-*` such as `/dx-update` or `/dx-client.js`) automatically bypass your custom middleware. This ensures that custom errors or unhandled redirects in user code will never break core features like Hot-Reloading.
 *   **Safe Execution:** User middleware runs inside a `try...catch` boundary. Any unhandled exception is logged to the terminal without crashing the server process.
+
+### 6. Vanilla Development (`--no-bundler`)
+If you are developing a traditional website with plain HTML, CSS, and JavaScript (without Webpack, Vite, or any build tool), use the `--no-bundler` flag.
+
+**Example:**
+```bash
+npx dx-server-js --dev --no-bundler --port 3000
+
+**How it works:**
+*   **Universal Hot-Reload:** Any change made to `.css`, `.js`, or sub-page `.html` files immediately triggers a browser refresh (unlike bundler mode, which waits for `index.html` modification).
+*   **Multi-Page Injection:** DX Server automatically detects and injects the hot-reload client script into all requested `.html` and `.htm` files (e.g., `/about.html`, `/contact.html`), not just the root `index.html`.
 
 ### 💡 Pro Tip: Smart HTTP Status Detection
 DX Server includes an intelligent feature for custom fallbacks: **it automatically detects the HTTP status code from your filename.**

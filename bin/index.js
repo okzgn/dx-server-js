@@ -9,10 +9,10 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.2.8';
+const DXServerVersion = '2.3.0';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
-if((major < 18) || (major == 18 && minor < 3)){
+if((major < 20) || (major == 20 && minor < 19)){
     console.error(DXServer, 'Not supported environment.');
     process.exit(1);
 }
@@ -41,6 +41,7 @@ const availableModes = [
     '--ingest',
     '--shell',
     '--frontend',
+    '--no-bundler'
 ];
 
 const devMode = availableModes[0];
@@ -65,6 +66,7 @@ let watchModeON = false;
 let watchCommandModeON = false;
 let shellModeON = false;
 let frontendModeON = false;
+let noBundlerModeON = false;
 
 let port;
 let protocol;
@@ -324,6 +326,9 @@ async function setArgsAndDefaultConfig(){
                 frontend: {
                     type: 'boolean'
                 },
+                'no-bundler': {
+                    type: 'boolean'
+                },
                 version: {
                     type: 'boolean'
                 },
@@ -533,6 +538,10 @@ async function setArgsAndDefaultConfig(){
         else {
             fallbackFilePath = '';
         }
+    }
+
+    if(args['no-bundler']){
+        noBundlerModeON = true;
     }
 }
 
@@ -1266,8 +1275,12 @@ async function initDxServerModes(){
             }
         }
 
-        async function buildingWatcher(){
+        async function buildingWatcher(watcherEvent, _path){
             try {
+                if(noBundlerModeON && _path){
+                    return writeToAllSuscribers(connectedWithHotReload, updateState);
+                }
+
                 let errorReference = await fileExists(errorReferenceFilePath);
                 if(errorReference){
                     errorReference = (await readFile(errorReferenceFilePath)).toString();
@@ -1328,7 +1341,7 @@ async function initDxServerModes(){
         filesWatching(filesAndFoldersToWatch, async function(watcherEvent, _path){
             executeWatchCommand(watcherEvent, _path);
             await disconnectionWatcher(watcherEvent);
-            await buildingWatcher();
+            await buildingWatcher(watcherEvent, _path);
         });
 
         app.get(updateStatusEndpoint, async function(req, res){
@@ -1509,8 +1522,22 @@ async function initDxServerModes(){
 
         let acceptsHTML = req.accepts('html');
         let acceptsResource = req.accepts(['image/*', 'css', 'js', 'json']);
-        if(req.path !== '/' && req.path !== '/' + entryPointFileName && (acceptsResource || !acceptsHTML)){
+
+        if(acceptsResource || !acceptsHTML){
             return next();
+        }
+
+        if (req.path !== '/' && req.path !== '/' + entryPointFileName && (req.path.endsWith('.html') || req.path.endsWith('.htm'))) {
+          const htmlDirPath = path.join(publicFolder, req.path);
+          if (htmlDirPath.startsWith(path.resolve(publicFolder))) {
+            const htmlDirStat = await stat(htmlDirPath);
+            if (htmlDirStat && htmlDirStat.isFile()) {
+              setDefaultHeaders(res, 'text/html');
+
+              let htmlContent = (await readFile(htmlDirPath)).toString();
+              return res.status(200).send(injectDxClientScript(htmlContent));
+            }
+          }
         }
 
         try {
