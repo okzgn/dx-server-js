@@ -180,6 +180,7 @@ If you are developing a traditional website with plain HTML, CSS, and JavaScript
 **Example:**
 ```bash
 npx dx-server-js --dev --no-bundler --port 3000
+```
 
 **How it works:**
 *   **Universal Hot-Reload:** Any change made to `.css`, `.js`, or sub-page `.html` files immediately triggers a browser refresh (unlike bundler mode, which waits for `index.html` modification).
