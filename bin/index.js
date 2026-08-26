@@ -1336,7 +1336,10 @@ async function initDxServerModes(){
             }
         }
 
-        let filesAndFoldersToWatch = [coreFolder, publicFolder, watchFolder, entryPointFilePath, customMiddlewareFilePath];
+        const filesAndFoldersToWatch = [coreFolder, publicFolder, entryPointFilePath, customMiddlewareFilePath];
+        if (watchModeON) {
+            filesAndFoldersToWatch.push(watchFolder);
+        }
 
         filesWatching(filesAndFoldersToWatch, async function(watcherEvent, _path){
             executeWatchCommand(watcherEvent, _path);
@@ -1520,14 +1523,16 @@ async function initDxServerModes(){
             tryToRedirectIPsCount++;
         }
 
-        let acceptsHTML = req.accepts('html');
-        let acceptsResource = req.accepts(['image/*', 'css', 'js', 'json']);
+        const ext = path.extname(req.path).toLowerCase();
+        const acceptsHTML = req.accepts('html');
+        //const acceptsResource = req.accepts(['image/*', 'css', 'js', 'json']);
 
-        if(acceptsResource || !acceptsHTML){
+        let isHTML = ext === '' || ext === '.html' || ext === '.htm';
+        if(!isHTML || !acceptsHTML){
             return next();
         }
 
-        if (req.path !== '/' && req.path !== '/' + entryPointFileName && (req.path.endsWith('.html') || req.path.endsWith('.htm'))) {
+        if (isHTML && req.path !== '/' && req.path !== '/' + entryPointFileName) {
           const htmlDirPath = path.join(publicFolder, req.path);
           if (htmlDirPath.startsWith(path.resolve(publicFolder))) {
             const htmlDirStat = await stat(htmlDirPath);
