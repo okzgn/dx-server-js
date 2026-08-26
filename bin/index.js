@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.3.0';
+const DXServerVersion = '2.3.1';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 20) || (major == 20 && minor < 19)){
