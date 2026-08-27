@@ -9,7 +9,7 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.3.1';
+const DXServerVersion = '2.3.2';
 
 const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
 if((major < 20) || (major == 20 && minor < 19)){
@@ -172,8 +172,6 @@ availableModesDescription['--network <ip>'] = 'Set the network interface address
 availableModesDescription['--cache <number>'] = 'Set the "maxAge" in milliseconds for static files caching (not for "index.html"). Defaults to "' + defaultMaxAgeCache + '".';
 availableModesDescription['--fallback <file_path>'] = 'Define the fallback file to be served when no route or static file matches the request.';
 
-setArgsAndDefaultConfig();
-
 let mkcert;
 let chokidar;
 const express = require('express');
@@ -181,13 +179,13 @@ const https = require('https');
 const app = express();
 
 const entryPointFileName = 'index.html';
-const entryPointFilePath = path.join(publicFolder, entryPointFileName);
+let entryPointFilePath = path.join(publicFolder, entryPointFileName);
 
 const localhost = 'localhost';
 const localhostIP = '127.0.0.1';
 const localhostIPv6 = '::1';
 const versionReferenceFile = 'index.html';
-const versionReferenceFilePath = path.join(publicFolder, versionReferenceFile);
+let versionReferenceFilePath = path.join(publicFolder, versionReferenceFile);
 
 const builtReferenceFile = '_built.tmp';
 const builtReferenceFileStdoutExt = '.stdout';
@@ -317,8 +315,7 @@ async function setArgsAndDefaultConfig(){
                     type: 'string'
                 },
                 fallback: {
-                    type: 'string',
-                    default: fallbackFilePath
+                    type: 'string'
                 },
                 shell: {
                     type: 'boolean'
@@ -448,6 +445,10 @@ async function setArgsAndDefaultConfig(){
             publicFolder = path.join(mainFolder, publicFolderName);
             watchFolder = path.join(mainFolder, watchFolderName);
             langFolder = path.join(mainFolder, langFolderName);
+
+            entryPointFilePath = path.join(publicFolder, entryPointFileName);
+            versionReferenceFilePath = path.join(publicFolder, versionReferenceFile);
+            fallbackFilePath = path.join(publicFolder, fallbackFileName);
         }
         else {
             Console.error('Cannot set ROOT/CWD folder.');
@@ -457,6 +458,10 @@ async function setArgsAndDefaultConfig(){
     if(args.public){
         if(await folderExists(args.public, true)){
             publicFolder = path.resolve(args.public);
+
+            entryPointFilePath = path.join(publicFolder, entryPointFileName);
+            versionReferenceFilePath = path.join(publicFolder, versionReferenceFile);
+            fallbackFilePath = path.join(publicFolder, fallbackFileName);
         }
         else {
             Console.error('Cannot set PUBLIC folder.');
@@ -539,6 +544,11 @@ async function setArgsAndDefaultConfig(){
             fallbackFilePath = '';
         }
     }
+    else {
+      if(!await fileExists(fallbackFilePath)){
+          fallbackFilePath = '';
+      }
+    }
 
     if(args['no-bundler']){
         noBundlerModeON = true;
@@ -546,6 +556,8 @@ async function setArgsAndDefaultConfig(){
 }
 
 (async function main(){
+
+await setArgsAndDefaultConfig();
 
 await createMainFolders();
 
