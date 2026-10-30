@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Breaking
+- Node.js **22.22.0** or higher is required (it was 20.19.0, which reached its end of life in April 2026), because of `chalk` 6 and `chokidar` 6. Publish this as a major version (3.0.0). Options and behaviour are unchanged.
+
 ### Fixed
 - `--prod`: gzip compression was never applied (the middleware was registered after the handlers that end the response).
 - `--fallback`: the HTTP status taken from the file name (`403.html`, `200.html`...) never worked.
@@ -19,8 +22,19 @@
 - `EACCES` on the port exits with an explanation instead of leaving a server that is not listening.
 - Custom middleware: created/removed in `--dev` without restarting, `async` rejections handled, `next()` is never called twice.
 - Build error text and paths are HTML-escaped in the connecting page.
+- Security: a client could pollute `Object.prototype` through the `dx-ip` parameter of `/dx-update` and `/dx-start-update` (for example with `__proto__`). The client maps have no prototype now and the token is compared in constant time.
+- Security: the internal `/dx-*` endpoints were readable by any website through the reflected CORS headers (including the live-reload token).
+- Security: request errors (for example an invalid JSON body) were answered with the stack trace and the paths of the server.
+- `Strict-Transport-Security` was sent in `--dev` and over HTTP (it can force `localhost` to HTTPS on every port of the browser), and `upgrade-insecure-requests` broke `--prod` served over HTTP on a LAN address. Now HSTS is only sent with `--prod --ssl`, and `upgrade-insecure-requests` only with `--ssl`.
+- An explicit `--port 80` with `--ssl` (or `--port 443` without it) was silently changed to the other port.
+- With a public folder that contains the project root (`--public .`), the `dx-server/` folder (including the certificate key) and `dx-server.middleware.js` were served.
+- Static assets were answered with `503` when more than 1000 client IPs were registered: only HTML navigations are counted and limited now.
+- `/dx-lang`: names that are not valid on every OS (`<>:"|?*`, trailing dot or space, `con`, `nul`...) are rejected, the temporary file is removed when a write fails, and requests without `Origin` (non-browser clients) are only accepted from this machine.
+- The `Server mode` log shows the real mode (`--dev`/`--prod`) also with `--built`.
 
 ### Added
+- `--cors <origins>` to restrict the origins allowed by CORS (by default any origin is still reflected).
+- Tests for live-reload, `--no-bundler`, `--ssl`, `--cors` and the security fixes; ESLint (`npm run lint`); GitHub Actions (Linux, Windows, macOS; Node.js 20.19, 22, 24); `prepublishOnly` runs lint and tests; `SECURITY.md`.
 - `--no-open` (do not open the browser) and `--no-csp` (disable `Content-Security-Policy`).
 - `/dx-lang` only accepts same-origin requests addressed to a trusted host name.
 - Warnings for options that are ignored because the option they depend on is missing, and for `--dev` reachable from the network.
@@ -32,3 +46,6 @@
 - `--prod` no longer injects the (empty) client script.
 - `--version` prints only the version.
 - The documentation (`README.md`) now describes what each option really does.
+- `express` 5.3, `helmet` 8.3, `chalk` 6 and `chokidar` 6.
+- Code style unified (ESLint), unused code removed, and the connecting-messages logic simplified (same messages and timing).
+- `CHANGELOG.md` is included in the published package.

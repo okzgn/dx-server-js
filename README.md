@@ -17,7 +17,7 @@
 
 ## Requirements
 
-*   **Node.js:** v20.19.0 or higher.
+*   **Node.js:** v22.22.0 or higher (DX Server 2.x supports Node.js 20.19).
 
 ## Installation
 
@@ -58,11 +58,12 @@ Run `npx dx-server-js --help` to print the list of options. Invalid options prin
 ### ⚙️ General Settings
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--port <number>` | `80` / `443` | Set the server port (1-65535, otherwise the server exits with code `1`). Defaults to `443` if `--ssl` is enabled, otherwise `80`. |
+| `--port <number>` | `80` / `443` | Set the server port (1-65535, otherwise the server exits with code `1`). Defaults to `443` if `--ssl` is enabled, otherwise `80`. An explicit port is always respected (for example `--ssl --port 80`). |
 | `--root <path>` | `cwd()` | Set the project root directory. The `www`, `src`, `lang` and `dx-server` folders and `dx-server.middleware.js` are resolved from it. |
 | `--public <path>` | `www` | Set the public folder to serve static files from. |
 | `--lang <path>` | `lang` | Set the directory for saving translation JSON files. |
 | `--network <ip>` | `::` | Bind to a specific network interface (e.g., `127.0.0.1` for this machine only, `0.0.0.0` for local network access). |
+| `--cors <origins>` | any origin | Comma-separated list of origins allowed by CORS (e.g. `"http://localhost:3000, https://app.test"`). By default any origin is reflected. The internal `/dx-*` endpoints never send CORS headers. |
 | `--silent` | `false` | Suppresses non-critical terminal logs (info/warn) and the passthrough of the piped output in `--built` mode. |
 | `--no-kill` | `false` | Disables the automatic port-killing feature. Throws an error if the port is busy. |
 | `--no-open` | `false` | Does not open the browser automatically. |
@@ -85,7 +86,7 @@ Generated files live in `dx-server/self-signed-certificates/`. The certificate i
 ### 👁️ Watcher & Commands
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--watch <path>` | - | Extra directory to observe for live-reload and command execution. Required by the other `--watch-*` options and by `--shell`. |
+| `--watch <path>` | - | Extra directory to observe for live-reload and command execution (a relative path is resolved from the current directory). Required by the other `--watch-*` options and by `--shell`. |
 | `--watch-command <cmd>` | - | CLI command to execute when files in the watch folder change. Quoted arguments are supported (`"node build.js --name 'a b'"`). |
 | `--watch-command-timeout <ms>`| `5000` | Debounce timeout (in ms) before executing the watch command. |
 | `--watch-depth <number>` | `5` | Maximum subdirectory depth the watcher will traverse. |
@@ -157,9 +158,9 @@ fetch('/dx-lang', {
 **Rules and responses:**
 *   New folders and files are created when they don't exist. Existing keys can be edited, and new keys can be added, but **no existing key can be removed**: a request with fewer keys than the file already has is rejected, so you don't accidentally delete translations.
 *   Status codes: `200` saved, `400` invalid body or keys missing, `403` rejected request, `409` the existing file is not a valid JSON object, `500` write error. Errors are never reported as success.
-*   Only `dir` and `code` names are used (no sub-paths): the file is always inside the lang folder.
+*   Only `dir` and `code` names are used (no sub-paths): the file is always inside the lang folder. Names must be valid on every OS (no `<>:"/\|?*`, no trailing dot or space, no Windows reserved names such as `con` or `nul`), so the lang folder can be shared between platforms.
 *   Writes are serialized (one at a time, a failed request never blocks the next ones) and atomic (temporary file + rename).
-*   *Origin protection:* because it writes to disk, the endpoint only accepts same-origin requests (no cross-site `Origin`/`Sec-Fetch-Site`) addressed to `localhost`, an IP address or the machine name (this blocks DNS-rebinding). Call it from the page served by DX Server, using the same host you opened it with.
+*   *Origin protection:* because it writes to disk, the endpoint only accepts same-origin requests (no cross-site `Origin`/`Sec-Fetch-Site`) addressed to `localhost`, an IP address or the machine name (this blocks DNS-rebinding). Call it from the page served by DX Server, using the same host you opened it with. Requests without an `Origin` header (scripts, `curl`) are only accepted from this machine; browsers always send it.
 *   *Payload Limit:* the JSON body is limited to 1MB by default (equivalent to roughly 1,000 large key-value pairs).
 
 ### 4. SPA Routing Logic
@@ -228,6 +229,8 @@ When running, DX Server creates a `dx-server` folder in your project root to man
 *   `dx-server/_browserOpen.tmp`: Prevents opening multiple browser tabs on rapid restarts.
 *   `dx-server.middleware.js`: Optional custom middleware in your project root.
 
+These files are never served, even if the public folder contains them (for example `--public .`).
+
 *Note: It is recommended to add `dx-server/` to your `.gitignore`.*
 
 ---
@@ -238,9 +241,10 @@ When running, DX Server creates a `dx-server` folder in your project root to man
 2. **Root Directory:** DX Server automatically uses your terminal's current directory (`process.cwd()`) as the root. If you need to run it from a different folder, use the `--root ./path/to/project` argument to ensure the `www`, `src`, `lang` and `dx-server` folders and the custom middleware are resolved correctly.
 3. **Ports 80 / 443:** Binding to standard web ports on Linux usually requires `sudo` privileges (and macOS on older versions). If you don't want to run as root, use a higher port (e.g., `--port 8080`).
 4. **Port Killing:** By default, DX Server aggressively frees up the requested port. If you have a Docker container or a database unexpectedly running on port 80, DX Server will kill it. Use `--no-kill` if you want traditional safe behavior.
-5. **Security:** CORS restrictions are disabled by default (any origin is reflected). The `--dev` mode exposes endpoints that allow disk writes (`/dx-lang`, protected against cross-origin requests but not authenticated). **Never** use `--dev` in a publicly exposed network or a production environment. Always use `--prod` for deployments.
-6. **Content-Security-Policy:** `--prod` sends the default [helmet](https://helmetjs.github.io/) policy, which blocks inline scripts and external resources. Use `--no-csp` if your application needs them.
-7. **Watch commands on Windows:** without `--shell`, the command is started directly, so scripts such as `npm` (`npm.cmd`) can't be launched. Use `--shell` for them.
+5. **Security:** CORS restrictions are disabled by default for your files (any origin is reflected; use `--cors` to restrict them), but never for the internal `/dx-*` endpoints. The `--dev` mode exposes endpoints that allow disk writes (`/dx-lang`, protected against cross-origin requests but not authenticated). The live-reload token only prevents other sites from using the event stream: it is not an authentication. **Never** use `--dev` in a publicly exposed network or a production environment. Always use `--prod` for deployments. See [SECURITY.md](SECURITY.md).
+6. **Content-Security-Policy:** `--prod` sends the default [helmet](https://helmetjs.github.io/) policy, which blocks inline scripts and external resources. Use `--no-csp` if your application needs them. Without `--ssl`, `upgrade-insecure-requests` is removed from the policy (it would break a server that only listens on HTTP), and `Strict-Transport-Security` is only sent with `--prod --ssl` (in `--dev` it would force `localhost` to HTTPS on every port of your browser).
+7. **Errors:** request errors (invalid JSON bodies, failing custom middleware) are logged in the terminal and answered with their status code only, never with stack traces.
+8. **Watch commands on Windows:** without `--shell`, the command is started directly, so scripts such as `npm` (`npm.cmd`) can't be launched. Use `--shell` for them.
 
 ---
 
@@ -248,10 +252,11 @@ When running, DX Server creates a `dx-server` folder in your project root to man
 
 ```bash
 npm install
+npm run lint
 npm test
 ```
 
-The test suite (`test/`) uses the built-in Node.js test runner and starts real DX Server processes on free ports.
+The test suite (`test/`) uses the built-in Node.js test runner and starts real DX Server processes on free ports. Lint and tests run on every push and pull request (Linux, Windows and macOS, Node.js 22.22 and 24), and before publishing (`prepublishOnly`).
 
 ---
 

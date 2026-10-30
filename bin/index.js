@@ -12,13 +12,14 @@ const DXServer = 'DX Server';
 const DXServerVersion = require('../package.json').version;
 
 const [major, minor] = process.versions ? process.versions.node.split('.').map(Number) : [0, 0];
-if((major < 20) || (major == 20 && minor < 19)){
-    console.error(DXServer, 'Not supported environment.');
+// Checked before loading the dependencies: chalk and chokidar are ES modules that require Node.js 22.22 or higher.
+if((major < 22) || (major === 22 && minor < 22)){
+    console.error(DXServer, 'Not supported environment: Node.js 22.22.0 or higher is required (current: ' + (process.versions ? process.versions.node : 'unknown') + ').');
     process.exit(1);
 }
 
 const Console = {};
-const chalk = require('chalk');
+const chalk = require('chalk').default; // ES module loaded with "require": its default export.
 setConsoleFunctions();
 
 process.on('uncaughtException', function(e){
@@ -103,7 +104,7 @@ const minFileWatchingSubFoldersDepth = 1;
 const defaultFileWatchingSubFoldersDepth = 5;
 let fileWatchingSubFoldersDepth = defaultFileWatchingSubFoldersDepth;
 
-const defaultIgnoredOnWatching = ['node_modules', /(^|[\\\/])\.[^\\\/]+$/];
+const defaultIgnoredOnWatching = ['node_modules', /(^|[\\/])\.[^\\/]+$/];
 let customIgnoredOnWatching = [];
 
 const minIngestChunksLimit = 1024;
@@ -113,12 +114,13 @@ const ingestOverlapLength = 256; // Tail of the previous data analyzed again, to
 const ingestQuietGapTime = 1500; // Silence (ms) after which the next output is considered a new build cycle.
 const ingestStdoutWriteDelay = 300;
 
-const minLangJSONLimit = ((1024 * 5));
 const defaultLangJSONLimit = ((1024 * 1024) * 1); // JSON of 1000 keys (1 to 64 bytes) and values (2 to 256 bytes) = 330 Kb. max.
 let langJSONLimit = defaultLangJSONLimit;
 
 const defaultNetworkExposedTo = '::';
 let networkExposedTo = defaultNetworkExposedTo;
+
+let corsOrigins = []; // Empty: any origin is reflected.
 
 const minMaxAgeCache = (1000 * 60);
 const defaultMaxAgeCache = (minMaxAgeCache * 60 * 24 * 1);
@@ -132,9 +134,10 @@ const fallbackCustomMiddlewareFileName = 'dx-server.middleware.js';
 let customMiddlewareFileName = fallbackCustomMiddlewareFileName;
 let customMiddlewareFilePath = path.join(mainFolder, fallbackCustomMiddlewareFileName);
 
-let connectedWithHotReload = {};
+// Keyed by client IP (partly sent by the client): maps without prototype, so keys like "__proto__" are plain keys.
+let connectedWithHotReload = Object.create(null);
 
-let tryToRedirect = {};
+let tryToRedirect = Object.create(null);
 let tryToRedirectIPsCount = 0;
 let tryToRedirectOverflowIPsCount = 0;
 
@@ -165,11 +168,12 @@ availableModesDescription['--root <folder_path>'] = 'Set the project root direct
 availableModesDescription['--public <folder_path>'] = 'Set custom public folder to serve.';
 availableModesDescription['--lang <folder_path>'] = 'Set custom lang folder for saving.';
 availableModesDescription['--watch <folder_path>'] = 'Add an extra directory for the hot-reload watcher to observe (required by the other "--watch-*" and "--shell" options).';
-availableModesDescription['--watch-ignore <string>'] = 'Set a comma-separated list of files or folders to be ignored on watching. Defaults to [' + (defaultIgnoredOnWatching.map(function(element){ return (typeof element === 'string' ? '"' + element + '"' : String(element)) })).join(', ') + ']';
+availableModesDescription['--watch-ignore <string>'] = 'Set a comma-separated list of regular expressions (matched against the full path) to be ignored on watching. Defaults to ['+ (defaultIgnoredOnWatching.map(function(element){ return (typeof element === 'string' ? '"' + element + '"' : String(element)); })).join(', ') + ']';
 availableModesDescription['--watch-depth <number>'] = 'Set limits how many levels of subdirectories will be traversed for watching. Defaults to ' + defaultFileWatchingSubFoldersDepth + '.';
 availableModesDescription['--watch-command <cli_command>'] = 'Set a CLI command to execute when the "--watch" folder has changed.';
 availableModesDescription['--watch-command-timeout <number>'] = 'Set the debounce timeout in milliseconds for the "--watch-command" execution. Defaults ' + defaultWatchCommandTimeoutTime + '.';
 availableModesDescription['--network <ip>'] = 'Set the network interface address (IPv4 or IPv6) that the server will bind to. Defaults to "' + defaultNetworkExposedTo + '".';
+availableModesDescription['--cors <origins>'] = 'Set a comma-separated list of origins allowed by CORS (e.g. "http://localhost:3000, https://app.test"). Defaults to any origin (reflected). Internal "/dx-*" endpoints are always same-origin only.';
 availableModesDescription['--cache <number>'] = 'Set the "maxAge" in milliseconds for static files caching (not for "index.html"). Defaults to "' + defaultMaxAgeCache + '" in "--prod" and 0 in "--dev" unless set explicitly.';
 availableModesDescription['--fallback <file_path>'] = 'Define the fallback file to be served when no route or static file matches the request.';
 
@@ -275,8 +279,10 @@ async function setArgsAndDefaultConfig(){
                     default: true
                 },
                 port: {
-                    type: 'string',
-                    default: '80'
+                    type: 'string'
+                },
+                cors: {
+                    type: 'string'
                 },
                 'no-kill': {
                     type: 'boolean'
@@ -358,7 +364,7 @@ async function setArgsAndDefaultConfig(){
     Console.blue(DXServer);
 
     if(args.help){
-         printAvailableModes(true);
+        printAvailableModes(true);
     }
 
     warnIgnoredArguments();
@@ -415,14 +421,16 @@ async function setArgsAndDefaultConfig(){
         SSLModeON = true;
     }
 
-    if(args.port){
+    if(typeof args.port !== 'undefined'){
+        // An explicit port is always respected (also 80 with "--ssl" or 443 without it).
         port = Number(args.port);
         if(!Number.isInteger(port) || port < 1 || port > 65535){
             Console.error('Invalid port:', args.port);
             process.exit(1);
         }
-        if(SSLModeON && port === 80){ port = 443; }
-        if(!SSLModeON && port === 443){ port = 80; }
+    }
+    else {
+        port = SSLModeON ? 443 : 80;
     }
 
     if(args.cert || args.key){
@@ -529,7 +537,11 @@ async function setArgsAndDefaultConfig(){
     }
 
     if(args.network){
-        networkExposedTo = net.isIP(args.network) != 0 ? args.network : defaultNetworkExposedTo;
+        networkExposedTo = net.isIP(args.network) !== 0 ? args.network : defaultNetworkExposedTo;
+    }
+
+    if(args.cors){
+        corsOrigins = commaSeparatedKeywordsList(args.cors);
     }
 
     if(args.shell && watchCommandModeON){
@@ -568,9 +580,9 @@ async function setArgsAndDefaultConfig(){
         }
     }
     else {
-      if(!await fileExists(fallbackFilePath)){
-          fallbackFilePath = '';
-      }
+        if(!await fileExists(fallbackFilePath)){
+            fallbackFilePath = '';
+        }
     }
 
     if(args['no-bundler']){
@@ -607,77 +619,77 @@ function warnIgnoredArguments(){
 
 (async function main(){
 
-await setArgsAndDefaultConfig();
+    await setArgsAndDefaultConfig();
 
-await createMainFolders();
+    await createMainFolders();
 
-switch(serverMode){
-    case builtMode:
+    switch(serverMode){
+        case builtMode:
+            try {
+                await cleanBuiltStateFiles();
+                await writeFile(builtReferenceFilePath, compilationState);
+                await writeFile(errorReferenceFilePath, '');
+
+                startIngestion();
+            }
+            catch(e){
+                Console.error('Ingestion error:', e.message);
+            }
+
+            if(!ingestModeON){
+                await initDxServerModes();
+            }
+            else {
+                startWatchCommandOnly();
+            }
+            break;
+
+        case devMode:
+        case prodMode:
+            await initDxServerModes();
+            break;
+        default:
+            Console.error('Server mode VALUES issue:');
+            Console.warn('Dev/Prod mode:', serverMode);
+            Console.warn('SSL off:', serverSSL);
+            printAvailableModes(false);
+    }
+
+    const sigterm = 'SIGTERM';
+    process.on(sigterm, function(){ shutdown(sigterm); });
+
+    const sigint = 'SIGINT';
+    process.on(sigint, function(){ shutdown(sigint); });
+
+    async function shutdown(kind){
+        Console.blue('Shutting down...');
+        let endPrefix = 'END';
+
+        stopWatchCommand();
+
         try {
+            Console.info('Deleting temporary files...');
             await cleanBuiltStateFiles();
-            await writeFile(builtReferenceFilePath, compilationState);
-            await writeFile(errorReferenceFilePath, '');
-
-            startIngestion();
+            if(!await dateInsideFileIsRecent(browserOpenReferenceFilePath)){ await deleteFile(browserOpenReferenceFilePath, true); }
         }
         catch(e){
-            Console.error('Ingestion error:', e.message);
+            Console.error('Cleaning temporary files error:', e.message);
+            Console.error(DXServer, endPrefix, kind);
+            process.exit(1);
         }
 
-        if(!ingestModeON){
-            await initDxServerModes();
-        }
-        else {
-            startWatchCommandOnly();
-        }
-    break;
-
-    case devMode:
-    case prodMode:
-        await initDxServerModes();
-    break;
-    default:
-        Console.error('Server mode VALUES issue:');
-        Console.warn('Dev/Prod mode:', serverMode);
-        Console.warn('SSL off:', serverSSL);
-        printAvailableModes(false);
-}
-
-const sigterm = 'SIGTERM';
-process.on(sigterm, function(){ shutdown(sigterm); });
-
-const sigint = 'SIGINT';
-process.on(sigint, function(){ shutdown(sigint); });
-
-async function shutdown(kind){
-    Console.blue('Shutting down...');
-    let endPrefix = 'END';
-
-    stopWatchCommand();
-
-    try {
-        Console.info('Deleting temporary files...');
-        await cleanBuiltStateFiles();
-        if(!await dateInsideFileIsRecent(browserOpenReferenceFilePath)){ await deleteFile(browserOpenReferenceFilePath, true); }
-    }
-    catch(e){
-        Console.error('Cleaning temporary files error:', e.message);
-        Console.error(DXServer, endPrefix, kind);
-        process.exit(1);
+        Console.green(DXServer, endPrefix, kind);
+        process.exit(0);
     }
 
-    Console.green(DXServer, endPrefix, kind);
-    process.exit(0);
-}
+    process.on('unhandledRejection', function(reason, promise){
+        Console.error(DXServer, 'Unhandled rejection:', reason);
+        Console.error(DXServer, 'Unhandled promise:', promise);
+    });
 
-process.on('unhandledRejection', function(reason, promise){
-    Console.error(DXServer, 'Unhandled rejection:', reason);
-    Console.error(DXServer, 'Unhandled promise:', promise);
-});
-
-process.on('exit', function(){
-    Console.info('Exit');
-});
+    process.on('exit', function(){
+        Console.info('Exit');
+    });
 
 })();
 
@@ -722,8 +734,25 @@ function escapeHTML(value){
     });
 }
 
+const invalidFileNameCharacters = /[<>:"/\\|?*\u0000-\u001F]/;
+const reservedFileNames = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+
+// Names valid on every OS (Windows is the strictest), so the lang folder can be shared between platforms.
+function isPortableFileName(name){
+    return typeof name === 'string' && name.length > 0 && name.length <= 200 && name !== '.' && name !== '..' &&
+        !invalidFileNameCharacters.test(name) && !/[. ]$/.test(name) && !reservedFileNames.test(name);
+}
+
+function sendFallback(req, res){
+    if(fallbackFilePath){
+        setDefaultHeaders(res, 'text/html');
+        return res.status(fallbackStatus).sendFile(fallbackFilePath);
+    }
+    return res.status(404).end();
+}
+
 function isLoopbackAddress(address){
-    return address === localhost || address === localhostIPv6 || address === '::ffff:127.0.0.1' || /^127\./.test(address);
+    return address === localhost || address === localhostIPv6 || /^(::ffff:)?127\./.test(address);
 }
 
 function isTrustedHostHeader(hostHeader){
@@ -825,7 +854,7 @@ async function ensureCertificatesAndCA(force){
             await createFolder(certsFolder, { recursive: true });
         }
 
-        Console.info('Deleting previous cert and key files.')
+        Console.info('Deleting previous cert and key files.');
         await deleteFile(crtPath, true);
         await deleteFile(keyPath, true);
 
@@ -879,54 +908,36 @@ async function stopPortProcess(){
     }
 }
 
+// Escalation levels of "writeSlowly", from the most severe. Each one is active once the counter exceeds "options[name]",
+// runs "options[name + '_callback']" and prints "options[name + '_message']" the first time and then every "every" calls.
+const writeSlowlyLevels = [
+    { name: 'last', every: 12, type: 'error' },
+    { name: 'very_slow', every: 10, type: 'error' },
+    { name: 'slow', every: 8, type: 'warn' },
+    { name: 'normal', every: 6, type: 'warn' },
+    { name: 'fast', every: 4, type: 'info' },
+    { name: 'first', every: 2, type: 'log', fromStart: true }
+];
+
 async function writeSlowly(options){
-    if(typeof options.counter === 'undefined'){
-        options.counter = 0;
+    options.counter = (options.counter || 0) + 1;
+
+    for(const level of writeSlowlyLevels){
+        const threshold = options[level.name];
+        if(!threshold || (!level.fromStart && options.counter <= threshold)){ continue; }
+
+        const callback = options[level.name + '_callback'];
+        if(typeof callback === 'function'){ await callback(); }
+
+        const doneKey = level.name + '_callback_done';
+        options[doneKey] = options[doneKey] || 0;
+        if((options.counter % level.every) === 0 || !options[doneKey]++){ Console[level.type](options.prefix, options[level.name + '_message']); }
+        return;
     }
 
-    options.counter++
-
-    let isTimeToConsoleInfoAlways = (options.counter % (options.always || 1)) === 0;
-    let isTimeToConsoleInfoFirst = (options.counter % 2) === 0;
-    let isTimeToConsoleInfoFast = (options.counter % 4) === 0;
-    let isTimeToConsoleInfoNormal = (options.counter % 6) === 0;
-    let isTimeToConsoleInfoSlow = (options.counter % 8) === 0;
-    let isTimeToConsoleInfoVerySlow = (options.counter % 10) === 0;
-    let isTimeToConsoleInfoLast = (options.counter % 12) === 0;
-
-    if(options.last && options.counter > options.last){
-        if(typeof options.last_callback === 'function'){ await options.last_callback(); }
-        if(typeof options.last_callback_done === 'undefined'){ options.last_callback_done = 0; }
-        if(isTimeToConsoleInfoLast || !options.last_callback_done++){ Console.error(options.prefix, options.last_message); }
-    }
-    else if(options.very_slow && options.counter > options.very_slow){
-        if(typeof options.very_slow_callback === 'function'){ await options.very_slow_callback(); }
-        if(typeof options.very_slow_callback_done === 'undefined'){ options.very_slow_callback_done = 0; }
-        if(isTimeToConsoleInfoVerySlow || !options.very_slow_callback_done++){ Console.error(options.prefix, options.very_slow_message); }
-    }
-    else if(options.slow && options.counter > options.slow){
-        if(typeof options.slow_callback === 'function'){ await options.slow_callback(); }
-        if(typeof options.slow_callback_done === 'undefined'){ options.slow_callback_done = 0; }
-        if(isTimeToConsoleInfoSlow || !options.slow_callback_done++){ Console.warn(options.prefix, options.slow_message); }
-    }
-    else if(options.normal && options.counter > options.normal){
-        if(typeof options.normal_callback === 'function'){ await options.normal_callback(); }
-        if(typeof options.normal_callback_done === 'undefined'){ options.normal_callback_done = 0; }
-        if(isTimeToConsoleInfoNormal || !options.normal_callback_done++){ Console.warn(options.prefix, options.normal_message); }
-    }
-    else if(options.fast && options.counter > options.fast){
-        if(typeof options.fast_callback === 'function'){ await options.fast_callback(); }
-        if(typeof options.fast_callback_done === 'undefined'){ options.fast_callback_done = 0; }
-        if(isTimeToConsoleInfoFast || !options.fast_callback_done++){ Console.info(options.prefix, options.fast_message); }
-    }
-    else if(options.first && options.counter){
-        if(typeof options.first_callback === 'function'){ await options.first_callback(); }
-        if(typeof options.first_callback_done === 'undefined'){ options.first_callback_done = 0; }
-        if(isTimeToConsoleInfoFirst || !options.first_callback_done++){ Console.log(options.prefix, options.first_message); }
-    }
-    else if(options.always){
+    if(options.always){
         if(typeof options.always_callback === 'function'){ await options.always_callback(options.counter); }
-        if(isTimeToConsoleInfoAlways){ Console[options.always_type || 'log'](options.prefix, options.always_message); }
+        if((options.counter % options.always) === 0){ Console[options.always_type || 'log'](options.prefix, options.always_message); }
     }
 }
 
@@ -1079,7 +1090,7 @@ function printAvailableModes(isHelp){
 }
 
 function closeConnectedWithHotReload(ip){
-    if(ip in connectedWithHotReload){
+    if(Object.hasOwn(connectedWithHotReload, ip)){
         clearInterval(connectedWithHotReload[ip].messages_interval);
         clearInterval(connectedWithHotReload[ip].heartbeat_interval);
         writeToSubscribers(connectedWithHotReload[ip], 'update', false);
@@ -1088,13 +1099,14 @@ function closeConnectedWithHotReload(ip){
 }
 
 function initializeConnectedIP(object, req, defaultConfig){
-    let token = decodeB64(req.query[DXTokenName]);
-    if(!token || (token !== DXTokenValue)){
+    const token = Buffer.from(decodeB64(req.query[DXTokenName]));
+    const expectedToken = Buffer.from(DXTokenValue);
+    if(token.length !== expectedToken.length || !crypto.timingSafeEqual(token, expectedToken)){
         throw new Error('Request not authenticated.');
     }
 
     let ip = cleanIPFrom(decodeB64(req.query[DXIPName]));
-    if(!(ip in tryToRedirect)){
+    if(!Object.hasOwn(tryToRedirect, ip)){
         closeConnectedWithHotReload(ip);
         throw new Error('IP not registered or precached request: ' + ip);
     }
@@ -1110,7 +1122,7 @@ function initializeConnectedIP(object, req, defaultConfig){
 function ignoredOnWatching(_path){
     if(_path === browserOpenReferenceFilePath){ return true; }
 
-    const segments = String(_path).split(/[\\\/]+/);
+    const segments = String(_path).split(/[\\/]+/);
     for(const rule of customIgnoredOnWatching){
         if(rule instanceof RegExp){
             if(rule.test(_path)){ return true; }
@@ -1200,7 +1212,7 @@ async function loadOpen(){
             open = (await import('open')).default;
         }
         catch(e){
-            open = function(url){ Console.error('Cannot be opened:', url); }
+            open = function(url){ Console.error('Cannot be opened:', url); };
         }
     }
 }
@@ -1232,14 +1244,14 @@ async function deleteOldStateFiles(){
 
 function decodeB64(string){
     if(typeof string !== 'string'){ return ''; }
-    return Buffer.from(string, 'base64').toString('utf8')
+    return Buffer.from(string, 'base64').toString('utf8');
 }
 
 function encodeB64(string){
     return Buffer.from(String(string), 'utf8').toString('base64');
 }
 
-function cleanIPFrom(ip, mode){
+function cleanIPFrom(ip){
     return normalizeClient({ ip: (!ip ? localhost : String(ip).slice(0, 128).replace(/'/g, '')) });
 }
 
@@ -1256,7 +1268,7 @@ function commaSeparatedKeywordsList(keywords, format){
                     Console.warn('This watch ignore entry cannot be RegExp:', e.message);
                 }
             });
-        break;
+            break;
     }
     return keywords;
 }
@@ -1274,25 +1286,23 @@ async function initDxServerModes(){
     await createMainFolders();
     await deleteOldStateFiles();
 
-    Console.info('Server mode:', serverMode);
+    Console.info('Server mode:', (prodModeON ? prodMode : devMode) + (builtModeON ? ' ' + builtMode : ''));
 
     const helmet = require('helmet');
-    const helmetConfig = {};
-    if(devModeON){
-        helmetConfig.contentSecurityPolicy = {
-            directives: {
-                "default-src": ["'self'"],
-                "script-src": ["'self'", "'unsafe-inline'"],
-                "style-src": ["'self'", "'unsafe-inline'"],
-                "img-src": ["'self'", "data:", "blob:"],
-                "connect-src": ["'self'", "*"]
-            }
-        };
-    }
-    if(noCSPModeON){
-        helmetConfig.contentSecurityPolicy = false;
-    }
-    app.use(helmet(helmetConfig));
+    const cspDirectives = devModeON ? {
+        "default-src": ["'self'"],
+        "script-src": ["'self'", "'unsafe-inline'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", "data:", "blob:"],
+        "connect-src": ["'self'", "*"]
+    } : {};
+    // Upgrading the requests to HTTPS breaks a server that only listens on HTTP (for example "--prod" on a LAN IP).
+    if(!SSLModeON){ cspDirectives['upgrade-insecure-requests'] = null; }
+    app.use(helmet({
+        contentSecurityPolicy: noCSPModeON ? false : { directives: cspDirectives },
+        // HSTS is remembered by the browser for the whole host ("localhost" on every port): only for real HTTPS deployments.
+        strictTransportSecurity: (SSLModeON && prodModeON) ? {} : false
+    }));
 
     // Compression must be registered before any handler that ends the response.
     if(prodModeON){
@@ -1301,7 +1311,13 @@ async function initDxServerModes(){
     }
 
     const cors = require('cors');
-    app.use(cors({ origin: true, credentials: true }));
+    const corsMiddleware = cors({ origin: (corsOrigins.length && !corsOrigins.includes('*')) ? corsOrigins : true, credentials: true });
+    const internalEndpoints = [updateStatusEndpoint, startUpdatesStatusEndpoint, langEndpoint, dxClientEndpoint];
+    app.use(function(req, res, next){
+        // Internal endpoints are same-origin only: other sites must not read their responses (the client token).
+        if(internalEndpoints.includes(req.path)){ return next(); }
+        corsMiddleware(req, res, next);
+    });
     app.use(express.json({ limit: langJSONLimit }));
 
     if(devModeON){
@@ -1346,7 +1362,7 @@ async function initDxServerModes(){
         connectedWithHotReload[localhost] = {
             time: Date.now(),
             ...statusHandlerWritesConfig
-        }
+        };
 
         app.get(startUpdatesStatusEndpoint, async function(req, res){
             let connectedIP;
@@ -1462,7 +1478,7 @@ async function initDxServerModes(){
                     case 'ENOENT':
                         message = e.message;
                         writeToAllSubscribers(connectedWithHotReload, 'file-missing');
-                    break;
+                        break;
                     default:
                         writeToAllSubscribers(connectedWithHotReload, builtErrorReference || startingState);
                 }
@@ -1526,7 +1542,9 @@ async function initDxServerModes(){
 
         app.post(langEndpoint, async function(req, res){
             // This endpoint writes to disk: only same-origin requests addressed to a trusted host name are accepted.
-            if(!isSameOriginRequest(req) || !isTrustedHostHeader(req.headers.host)){
+            // Browsers always send "Origin" on POST: requests without it (scripts, curl) are only accepted from this machine.
+            const fromThisMachineOrBrowser = !!req.headers.origin || isLoopbackAddress(req.socket.remoteAddress);
+            if(!fromThisMachineOrBrowser || !isSameOriginRequest(req) || !isTrustedHostHeader(req.headers.host)){
                 Console.error(langEndpoint, 'Cross-origin request or untrusted host rejected.');
                 return res.status(403).end();
             }
@@ -1539,7 +1557,7 @@ async function initDxServerModes(){
 
             const dirName = path.basename(path.normalize(body.dir));
             const codeName = path.basename(path.normalize(body.code));
-            if(['', '.', '..'].includes(dirName) || ['', '.', '..'].includes(codeName)){
+            if(!isPortableFileName(dirName) || !isPortableFileName(codeName)){
                 Console.error(langEndpoint, 'Invalid "dir" or "code".');
                 return res.status(400).end();
             }
@@ -1583,8 +1601,14 @@ async function initDxServerModes(){
 
                     // Write to a temporary file and rename it: the target file is never left half written.
                     const temporaryFile = fileToSave + '.tmp';
-                    await writeFile(temporaryFile, JSON.stringify(body.keys));
-                    await fs.promises.rename(temporaryFile, fileToSave);
+                    try {
+                        await writeFile(temporaryFile, JSON.stringify(body.keys));
+                        await fs.promises.rename(temporaryFile, fileToSave);
+                    }
+                    catch(e){
+                        await deleteFile(temporaryFile, true);
+                        throw e;
+                    }
 
                     return { status: 200, total: Object.keys(body.keys).length };
                 });
@@ -1604,14 +1628,9 @@ async function initDxServerModes(){
         });
     }
 
-    app.get(dxClientEndpoint, async function(req, res){
+    app.get(dxClientEndpoint, function(req, res){
         setDefaultHeaders(res, 'text/javascript');
-
-        if(prodModeON){
-            return res.status(200).send(dxProdModeScript(req.ip));
-        }
-
-        return res.status(200).send(dxDevModeScript(req.ip));
+        return res.status(200).send(prodModeON ? dxProdModeScript() : dxDevModeScript(req.ip));
     });
 
     const customMiddlewareFoundOnStart = await fileExists(customMiddlewareFilePath);
@@ -1619,24 +1638,24 @@ async function initDxServerModes(){
         Console.info('Loading custom middleware from:', customMiddlewareFileName);
     }
 
-    app.use(function(req, res, next) {
-        if (req.path.startsWith('/dx-')) {
+    app.use(function(req, res, next){
+        if(req.path.startsWith('/dx-')){
             return next();
         }
 
         // On DEV mode the file can be created, changed or removed without restarting the server.
-        if (!(devModeON ? fs.existsSync(customMiddlewareFilePath) : customMiddlewareFoundOnStart)) {
+        if(!(devModeON ? fs.existsSync(customMiddlewareFilePath) : customMiddlewareFoundOnStart)){
             return next();
         }
 
         let nextCalled = false;
-        const safeNext = function(error) {
+        const safeNext = function(error){
             nextCalled = true;
             return next(error);
         };
-        const recover = function(e) {
+        const recover = function(e){
             Console.error('Custom middleware error:', e.message);
-            if (!nextCalled && !res.headersSent) {
+            if(!nextCalled && !res.headersSent){
                 nextCalled = true;
                 next();
             }
@@ -1644,36 +1663,56 @@ async function initDxServerModes(){
 
         try {
             // Clean cache to Hot-Reload the middleware if Dev mode is ON
-            if (devModeON) {
+            if(devModeON){
                 delete require.cache[require.resolve(customMiddlewareFilePath)];
             }
 
             const userMiddleware = require(customMiddlewareFilePath);
 
-            if (typeof userMiddleware !== 'function') {
+            if(typeof userMiddleware !== 'function'){
                 return next();
             }
 
             const result = userMiddleware(req, res, safeNext);
-            if (result && typeof result.then === 'function') {
+            if(result && typeof result.then === 'function'){
                 result.then(undefined, recover);
             }
-        } catch (e) {
+        }
+        catch(e){
             recover(e);
         }
     });
+
+    // When the public folder contains the project root (e.g. "--public ."), DX Server internal files are never served.
+    if(isInside(publicFolder, coreFolder) || isInside(publicFolder, customMiddlewareFilePath)){
+        app.use(function(req, res, next){
+            if(req.method !== 'GET' && req.method !== 'HEAD'){ return next(); }
+
+            let requestedPath;
+            try {
+                requestedPath = decodeURIComponent(req.path);
+            }
+            catch(e){
+                return next();
+            }
+
+            const requestedFile = path.join(publicFolder, requestedPath);
+            if(isInside(coreFolder, requestedFile) || isInside(customMiddlewareFilePath, requestedFile)){
+                return sendFallback(req, res);
+            }
+            next();
+        });
+    }
 
     function clearIPFromControlMap(clearLimit){
         clearLimit = (clearLimit === true) ? 1 : (isNaN(clearLimit) ? (tryToRedirectOverflowIPsCount >= 2 ? Math.round(tryToRedirectOverflowIPsCount / 2) : 0) : clearLimit);
         let deletedIPs = 0;
 
         for(let ip in tryToRedirect){
-            if(Object.hasOwn(tryToRedirect, ip)){
-                if(deletedIPs >= clearLimit){ break; }
-                delete tryToRedirect[ip];
-                tryToRedirectIPsCount--;
-                deletedIPs++;
-            }
+            if(deletedIPs >= clearLimit){ break; }
+            delete tryToRedirect[ip];
+            tryToRedirectIPsCount--;
+            deletedIPs++;
         }
 
         tryToRedirectOverflowIPsCount -= deletedIPs;
@@ -1681,14 +1720,36 @@ async function initDxServerModes(){
         tryToRedirectIPsCount = Math.max(0, tryToRedirectIPsCount);
     }
 
+    function entryPointUnavailablePage(ipFrom, errorReference){
+        const attempts = tryToRedirect[ipFrom];
+        const message = errorReference ? 'Build error: ' + escapeHTML(errorReference.slice(0, 64) + ' ...') : (attempts > 10 ? 'Connecting entry point (' + attempts + ') ...' : 'Trying to connect entry point (' + attempts + ') ...');
+        return `
+<!DOCTYPE html>
+<html>
+<head>
+${dxDefaultHTMLHead(ipFrom)}
+</head>
+<body>${DXServer}<br>${message}<br><br>( ${escapeHTML(entryPointFilePath)} )</body>
+</html>
+`;
+    }
+
     let entryPointTimestamp;
-    let currentEntryPointStat;
     app.use(async function(req, res, next){
         if(req.method !== 'GET' && req.method !== 'HEAD'){
             return next();
         }
 
-        let ipFrom = cleanIPFrom(req.ip);
+        const ext = path.extname(req.path).toLowerCase();
+
+        // Only browser navigations (explicit "text/html" in Accept) are routed to the entry point; "fetch" and "XHR" calls (Accept: */*) are not.
+        // Assets never reach the IPs control below, so they are always served.
+        const isHTML = ext === '' || ext === '.html' || ext === '.htm';
+        if(!isHTML || !requestAcceptsHTMLDocument(req)){
+            return next();
+        }
+
+        const ipFrom = cleanIPFrom(req.ip);
 
         if(tryToRedirectIPsCount > connectedIPsFromLimit){
             tryToRedirectOverflowIPsCount++;
@@ -1696,47 +1757,39 @@ async function initDxServerModes(){
             return res.status(503).end();
         }
 
-        if(typeof tryToRedirect[ipFrom] === 'undefined'){
+        if(!Object.hasOwn(tryToRedirect, ipFrom)){
             tryToRedirect[ipFrom] = 0;
             tryToRedirectIPsCount++;
         }
 
-        const ext = path.extname(req.path).toLowerCase();
-
-        // Only browser navigations (explicit "text/html" in Accept) are routed to the entry point; "fetch" and "XHR" calls (Accept: */*) are not.
-        let isHTML = ext === '' || ext === '.html' || ext === '.htm';
-        if(!isHTML || !requestAcceptsHTMLDocument(req)){
-            return next();
-        }
-
-        if (req.path !== '/' && req.path !== '/' + entryPointFileName) {
-          let requestedPath;
-          try {
-            requestedPath = decodeURIComponent(req.path);
-          }
-          catch(e){
-            return next();
-          }
-
-          const htmlFilePath = path.join(publicFolder, requestedPath);
-          if (isInside(publicFolder, htmlFilePath)) {
-            const htmlFileStat = await stat(htmlFilePath);
-            if (htmlFileStat && htmlFileStat.isFile()) {
-              // Existing files without HTML extension, and any file on PROD (nothing to inject), go to the static handler.
-              if (ext === '' || prodModeON) {
-                return next();
-              }
-
-              setDefaultHeaders(res, 'text/html');
-
-              let htmlContent = (await readFile(htmlFilePath)).toString();
-              return res.status(200).send(injectDxClientScript(htmlContent));
+        if(req.path !== '/' && req.path !== '/' + entryPointFileName){
+            let requestedPath;
+            try {
+                requestedPath = decodeURIComponent(req.path);
             }
-          }
+            catch(e){
+                return next();
+            }
+
+            const htmlFilePath = path.join(publicFolder, requestedPath);
+            if(isInside(publicFolder, htmlFilePath)){
+                const htmlFileStat = await stat(htmlFilePath);
+                if(htmlFileStat && htmlFileStat.isFile()){
+                    // Existing files without HTML extension, and any file on PROD (nothing to inject), go to the static handler.
+                    if(ext === '' || prodModeON){
+                        return next();
+                    }
+
+                    setDefaultHeaders(res, 'text/html');
+
+                    const htmlContent = (await readFile(htmlFilePath)).toString();
+                    return res.status(200).send(injectDxClientScript(htmlContent));
+                }
+            }
         }
 
         try {
-            currentEntryPointStat = await stat(entryPointFilePath);
+            const currentEntryPointStat = await stat(entryPointFilePath);
             if(!currentEntryPointStat){ throw new Error('Cannot verify entry point stat.'); }
             setDefaultHeaders(res, 'text/html');
             if(!entryPointCache || (currentEntryPointStat.mtimeMs !== entryPointTimestamp)){
@@ -1750,41 +1803,23 @@ async function initDxServerModes(){
             tryToRedirect[ipFrom]++;
             entryPointCache = '';
             entryPointTimestamp = 0;
-            let errorReference = (await readFile(errorReferenceFilePath, true)).toString();
-            if(errorReference || tryToRedirect[ipFrom] > 10){
-                return res.status(404).send(`
-<!DOCTYPE html>
-<html>
-<head>
-${dxDefaultHTMLHead(ipFrom)}
-</head>
-<body>${DXServer}<br>${ errorReference ? 'Build error: ' + escapeHTML(errorReference.slice(0, 64) + ' ...') : 'Connecting entry point (' + tryToRedirect[ipFrom] + ') ...' }<br><br>( ${escapeHTML(entryPointFilePath)} )</body>
-</html>
-`);
-            }
-
-            return res.status(404).send(`
-<!DOCTYPE html>
-<html>
-<head>
-${dxDefaultHTMLHead(ipFrom)}
-</head>
-<body>${DXServer}<br>Trying to connect entry point (${tryToRedirect[ipFrom]}) ...<br><br>( ${escapeHTML(entryPointFilePath)} )</body>
-</html>
-`);
+            const errorReference = (await readFile(errorReferenceFilePath, true)).toString();
+            return res.status(404).send(entryPointUnavailablePage(ipFrom, errorReference));
         }
     });
 
     // Client script cannot be injected on HTML Express statics, because of that goes after the injector middleware.
     app.use(express.static(publicFolder, prodModeON ? { maxAge: maxAgeCache, etag: true, lastModified: true } : { maxAge: maxAgeCache, etag: false }));
 
-    app.use(function(req, res){
-        // 404 Fallback
-        if(fallbackFilePath){
-            setDefaultHeaders(res, 'text/html');
-            return res.status(fallbackStatus).sendFile(fallbackFilePath);
-        }
-        return res.status(404).end();
+    app.use(sendFallback);
+
+    // Errors (invalid JSON bodies, failing custom middleware...) are logged, never sent to the client with their stack trace.
+    app.use(function(e, req, res, next){
+        const errorStatus = Number(e.status || e.statusCode);
+        const status = (Number.isInteger(errorStatus) && errorStatus >= 400 && errorStatus < 600) ? errorStatus : 500;
+        Console[status >= 500 ? 'error' : 'warn']('Request error:', req.method, req.path, status, e.message);
+        if(res.headersSent){ return next(e); }
+        return res.status(status).end();
     });
 
     let certFile;
@@ -1838,12 +1873,10 @@ ${dxDefaultHTMLHead(ipFrom)}
     }
 
     try {
-        await stopPortProcess(port);
+        await stopPortProcess();
 
         protocol = SSLModeON ? 'https://' : 'http://';
-        server = (SSLModeON ? https.createServer({ cert: certFile, key: certKey }, app) : app).listen(port, networkExposedTo, function(){
-            dxServerReadyOn(port);
-        });
+        server = (SSLModeON ? https.createServer({ cert: certFile, key: certKey }, app) : app).listen(port, networkExposedTo, dxServerReadyOn);
     }
     catch(e){
         dxServerNotReady(e);
@@ -2086,7 +2119,7 @@ function executeWatchCommand(event, _path){
 
                 child.stderr.setEncoding('utf8');
                 child.stderr.on('data', function(stderr){
-                   Console.warn('Watch command stderr:', watchCommand, '>', (stderr.length > 128 ? stderr.slice(0, 125) + '...' : stderr));
+                    Console.warn('Watch command stderr:', watchCommand, '>', (stderr.length > 128 ? stderr.slice(0, 125) + '...' : stderr));
                 });
 
                 child.stdout.setEncoding('utf8');
@@ -2116,7 +2149,7 @@ function dxDevModeConnector(){
 }
 
 function dxDefaultHTMLHead(ip){
-        return `
+    return `
     <meta http-equiv="refresh" content="${(Math.ceil(entryPointConnectReloadInterval/1000) * 2)}">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: "Courier New", Courier, monospace; font-size: 0.9rem; font-weight: normal; }
@@ -2245,7 +2278,7 @@ function dxDevFrontendMode(){
 `;
 }
 
-function dxProdModeScript(ip){
+function dxProdModeScript(){
     return `/*
 ${DXClient} PROD mode.
 */`;

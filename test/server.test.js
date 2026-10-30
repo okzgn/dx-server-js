@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
+const https = require('node:https');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -97,6 +98,31 @@ function request(port, options){
 }
 
 const browser = { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
+
+// Opens the live-reload event stream like the injected client does, and collects the received messages.
+async function openLiveReload(port, ip){
+    await request(port, { path: '/', headers: browser }); // A navigation registers the client IP.
+    const script = (await request(port, { path: '/dx-client.js' })).body;
+    const token = /dxToken = '([^']+)'/.exec(script)[1];
+    const dxIP = ip ? Buffer.from(ip).toString('base64') : /dxIP = '([^']*)'/.exec(script)[1];
+    const stream = { messages: [], status: 0 };
+    return new Promise(function(resolve){
+        stream.request = http.get({ host: '127.0.0.1', port, path: '/dx-update?dx-token=' + encodeURIComponent(token) + '&dx-ip=' + encodeURIComponent(dxIP) }, function(res){
+            stream.status = res.statusCode;
+            res.setEncoding('utf8');
+            let pending = '';
+            res.on('data', function(chunk){
+                pending += chunk;
+                const events = pending.split('\n\n');
+                pending = events.pop();
+                for(const event of events){ stream.messages.push(event.replace(/^data: /, '')); }
+            });
+            res.on('error', function(){});
+            resolve(stream);
+        });
+        stream.request.on('error', function(){});
+    });
+}
 
 function run(root, args){
     return spawnSync(process.execPath, [bin].concat(args), { cwd: root, encoding: 'utf8', timeout: 15000 });
@@ -340,6 +366,156 @@ describe('--built --ingest with --watch-command', function(){
         }
         finally {
             await stopServer({ child });
+        }
+    });
+});
+
+describe('security', function(){
+    let root;
+    let server;
+    before(async function(){
+        root = makeProject();
+        server = await startServer(root, ['--dev']);
+    });
+    after(async function(){ await stopServer(server); removeDir(root); });
+
+    it('rejects a client IP that is not a plain key ("__proto__")', async function(){
+        const stream = await openLiveReload(server.port, '__proto__');
+        stream.request.destroy();
+        assert.equal(stream.status, 400);
+    });
+
+    it('rejects the live-reload stream without a valid token', async function(){
+        const res = await request(server.port, { path: '/dx-update?dx-token=bad&dx-ip=bad' });
+        assert.equal(res.status, 400);
+    });
+
+    it('internal endpoints are not readable by other origins, static files keep the default CORS', async function(){
+        const internal = await request(server.port, { path: '/dx-client.js', headers: { Origin: 'http://evil.example' } });
+        assert.equal(internal.headers['access-control-allow-origin'], undefined);
+
+        const asset = await request(server.port, { path: '/big.txt', headers: { Origin: 'http://other.example' } });
+        assert.equal(asset.headers['access-control-allow-origin'], 'http://other.example');
+    });
+
+    it('errors are answered without stack traces', async function(){
+        const res = await request(server.port, { method: 'POST', path: '/anything', headers: { 'Content-Type': 'application/json' }, body: '{not json' });
+        assert.equal(res.status, 400);
+        assert.equal(res.body, '');
+    });
+
+    it('does not send HSTS nor "upgrade-insecure-requests" over HTTP', async function(){
+        const res = await request(server.port, { path: '/', headers: browser });
+        assert.equal(res.headers['strict-transport-security'], undefined);
+        assert.doesNotMatch(res.headers['content-security-policy'], /upgrade-insecure-requests/);
+    });
+
+    it('/dx-lang rejects names that are not valid on every OS', async function(){
+        for(const body of [{ dir: 'con', code: 'nav' }, { dir: 'en', code: 'a|b' }, { dir: 'en', code: '<b>' }, { dir: 'en', code: 'nav.' }]){
+            const res = await request(server.port, { method: 'POST', path: '/dx-lang', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ keys: { a: '1' } }, body)) });
+            assert.equal(res.status, 400, JSON.stringify(body));
+        }
+    });
+
+    it('--cors restricts the allowed origins', async function(){
+        const restricted = await startServer(root, ['--dev', '--cors', 'http://allowed.example']);
+        try {
+            const allowed = await request(restricted.port, { path: '/big.txt', headers: { Origin: 'http://allowed.example' } });
+            assert.equal(allowed.headers['access-control-allow-origin'], 'http://allowed.example');
+            const other = await request(restricted.port, { path: '/big.txt', headers: { Origin: 'http://other.example' } });
+            assert.equal(other.headers['access-control-allow-origin'], undefined);
+        }
+        finally {
+            await stopServer(restricted);
+        }
+    });
+
+    it('--public pointing to the project root never serves DX Server internal files', async function(){
+        fs.writeFileSync(path.join(root, 'dx-server.middleware.js'), 'module.exports = function(req, res, next){ next(); };');
+        fs.writeFileSync(path.join(root, 'index.html'), '<html><body>root</body></html>');
+        const exposed = await startServer(root, ['--prod', '--public', root]);
+        try {
+            fs.writeFileSync(path.join(root, 'dx-server', 'private.txt'), 'private');
+            assert.equal((await request(exposed.port, { path: '/index.html' })).status, 200);
+            assert.equal((await request(exposed.port, { path: '/dx-server.middleware.js' })).status, 404);
+            assert.equal((await request(exposed.port, { path: '/dx-server/private.txt' })).status, 404);
+        }
+        finally {
+            await stopServer(exposed);
+            fs.rmSync(path.join(root, 'dx-server.middleware.js'));
+        }
+    });
+});
+
+describe('live-reload', function(){
+    let root;
+    before(function(){ root = makeProject(); });
+    after(function(){ removeDir(root); });
+
+    it('sends "update" to the open tabs when the entry point changes', async function(){
+        const server = await startServer(root, ['--dev']);
+        let stream;
+        try {
+            stream = await openLiveReload(server.port);
+            assert.equal(stream.status, 200);
+            assert.ok(await waitFor(function(){ return stream.messages.includes('1'); }), 'connection message expected');
+
+            await sleep(500);
+            stream.messages.length = 0;
+            const later = new Date(Date.now() + 5000);
+            fs.writeFileSync(path.join(root, 'www', 'index.html'), '<!DOCTYPE html><html><body>changed</body></html>');
+            fs.utimesSync(path.join(root, 'www', 'index.html'), later, later);
+
+            assert.ok(await waitFor(function(){ return stream.messages.includes('update'); }), 'update expected, got: ' + stream.messages.join(','));
+        }
+        finally {
+            if(stream){ stream.request.destroy(); }
+            await stopServer(server);
+        }
+    });
+
+    it('--no-bundler sends "update" on any file change', async function(){
+        const server = await startServer(root, ['--dev', '--no-bundler']);
+        let stream;
+        try {
+            stream = await openLiveReload(server.port);
+            assert.ok(await waitFor(function(){ return stream.messages.includes('1'); }), 'connection message expected');
+
+            await sleep(500);
+            stream.messages.length = 0;
+            fs.writeFileSync(path.join(root, 'www', 'style.css'), 'body { color: red; }');
+
+            assert.ok(await waitFor(function(){ return stream.messages.includes('update'); }), 'update expected, got: ' + stream.messages.join(','));
+        }
+        finally {
+            if(stream){ stream.request.destroy(); }
+            await stopServer(server);
+        }
+    });
+});
+
+describe('--ssl', function(){
+    let root;
+    before(function(){ root = makeProject(); });
+    after(function(){ removeDir(root); });
+
+    it('generates self signed certificates and serves over HTTPS', async function(){
+        const server = await startServer(root, ['--dev', '--ssl']);
+        try {
+            const res = await new Promise(function(resolve, reject){
+                https.get({ host: '127.0.0.1', port: server.port, path: '/', headers: browser, rejectUnauthorized: false }, function(response){
+                    response.resume();
+                    response.on('end', function(){ resolve(response); });
+                }).on('error', reject);
+            });
+            assert.equal(res.statusCode, 200);
+            assert.equal(res.headers['strict-transport-security'], undefined); // Never pinned to HTTPS on DEV.
+            for(const file of ['cert.crt', 'cert.key', 'ca.crt']){
+                assert.ok(fs.existsSync(path.join(root, 'dx-server', 'self-signed-certificates', file)), file);
+            }
+        }
+        finally {
+            await stopServer(server);
         }
     });
 });
