@@ -1075,7 +1075,7 @@ function setConsoleFunctions(){
 }
 
 function printVersion(){
-    Console.green(DXServerVersion);
+    console.log(DXServerVersion);
     process.exit(0);
 }
 
