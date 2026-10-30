@@ -1,7 +1,8 @@
 <!DOCTYPE html>
+<html lang="en">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, user-scalable=no">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>DX Server</title>
         <style>
             :root {
@@ -42,6 +43,10 @@
                 100% {
                     transform: translateX(25%);
                 }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .bg { animation: none; }
             }
         </style>
     </head>

@@ -9,9 +9,9 @@
 */
 
 const DXServer = 'DX Server';
-const DXServerVersion = '2.3.2';
+const DXServerVersion = require('../package.json').version;
 
-const [major, minor] = process.versions ? process.versions.node.split('.') : [0, 0];
+const [major, minor] = process.versions ? process.versions.node.split('.').map(Number) : [0, 0];
 if((major < 20) || (major == 20 && minor < 19)){
     console.error(DXServer, 'Not supported environment.');
     process.exit(1);
@@ -28,32 +28,19 @@ process.on('uncaughtException', function(e){
     process.exit(1);
 });
 
-Console.blue(DXServer);
-
-const availableModes = [
-    '--dev',
-    '--prod',
-    '--no-ssl',
-    '--ssl',
-    '--built',
-    '--no-kill',
-    '--silent',
-    '--ingest',
-    '--shell',
-    '--frontend',
-    '--no-bundler'
-];
-
-const devMode = availableModes[0];
-const prodMode = availableModes[1];
-const noSSLMode = availableModes[2];
-const SSLMode = availableModes[3];
-const builtMode = availableModes[4];
-const noKillMode = availableModes[5];
-const silentMode = availableModes[6];
-const ingestMode = availableModes[7];
-const shellMode = availableModes[8];
-const frontendMode = availableModes[9];
+const devMode = '--dev';
+const prodMode = '--prod';
+const noSSLMode = '--no-ssl';
+const SSLMode = '--ssl';
+const builtMode = '--built';
+const noKillMode = '--no-kill';
+const silentMode = '--silent';
+const ingestMode = '--ingest';
+const shellMode = '--shell';
+const frontendMode = '--frontend';
+const noBundlerMode = '--no-bundler';
+const noOpenMode = '--no-open';
+const noCSPMode = '--no-csp';
 
 let SSLModeON = false;
 let devModeON = false;
@@ -67,6 +54,8 @@ let watchCommandModeON = false;
 let shellModeON = false;
 let frontendModeON = false;
 let noBundlerModeON = false;
+let noOpenModeON = false;
+let noCSPModeON = false;
 
 let port;
 let protocol;
@@ -81,6 +70,9 @@ const path = require('path');
 const { parseArgs } = require('util');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
+const net = require('net');
+const crypto = require('crypto');
 const dxServerFolderName = 'dx-server';
 const selfSignedCertificatesFolderName = 'self-signed-certificates';
 const args = {};
@@ -111,12 +103,15 @@ const minFileWatchingSubFoldersDepth = 1;
 const defaultFileWatchingSubFoldersDepth = 5;
 let fileWatchingSubFoldersDepth = defaultFileWatchingSubFoldersDepth;
 
-const defaultIgnoredOnWatching = ['node_modules', /^[\\\/]?\./];
+const defaultIgnoredOnWatching = ['node_modules', /(^|[\\\/])\.[^\\\/]+$/];
 let customIgnoredOnWatching = [];
 
 const minIngestChunksLimit = 1024;
 const defaultIngestChunksLimit = 1048576;
 let ingestChunksLimit = defaultIngestChunksLimit;
+const ingestOverlapLength = 256; // Tail of the previous data analyzed again, to detect keywords split between two chunks.
+const ingestQuietGapTime = 1500; // Silence (ms) after which the next output is considered a new build cycle.
+const ingestStdoutWriteDelay = 300;
 
 const minLangJSONLimit = ((1024 * 5));
 const defaultLangJSONLimit = ((1024 * 1024) * 1); // JSON of 1000 keys (1 to 64 bytes) and values (2 to 256 bytes) = 330 Kb. max.
@@ -151,25 +146,31 @@ availableModesDescription[SSLMode] = 'ENABLE automatic self signed SSL certifica
 availableModesDescription[builtMode] = 'ENABLE ingestion for another process stdout, to know building states and use it for hot-reload.';
 availableModesDescription[noKillMode] = 'DISABLE the default port-killing feature. If the port is busy, the server will throw an error instead of taking it over.';
 availableModesDescription[silentMode] = 'ENABLE suppresses non-critical terminal logs and warnings.';
-availableModesDescription[ingestMode] = 'ENABLE ONLY ingestion for another process stdout, without server listen. Useful for "--watch-command".';
+availableModesDescription[ingestMode] = 'ENABLE ONLY ingestion for another process stdout, without server listen (requires "--built"). Useful for "--watch-command".';
 availableModesDescription[shellMode] = 'ENABLE "--watch-command" execution as shell mode.';
+availableModesDescription[noBundlerMode] = 'ENABLE vanilla mode: reload the browser on any file change (HTML, CSS, JS) without a bundler.';
+availableModesDescription[noOpenMode] = 'DISABLE opening the browser automatically.';
+availableModesDescription[noCSPMode] = 'DISABLE the Content-Security-Policy header (useful in "--prod" for apps with inline scripts or external CDNs).';
+availableModesDescription['--port <number>'] = 'Set the server port. Defaults to 80 (443 with "--ssl").';
+availableModesDescription['--version'] = 'Print the DX Server version and exit.';
+availableModesDescription['--help'] = 'Print this list and exit.';
 availableModesDescription[frontendMode] = 'ENABLE some backwards compatibility and patches native frontend functions to implement global "fetch" timeouts and aborts (to avoid browser freeze with a lot of fetches) and ensure "console.error" outputs strings (for platforms with limited object inspection capabilities).';
 availableModesDescription['--frontend-fetch-timeout <number>'] = 'Set the timeout in milliseconds for the client fetch interceptor. Defaults to ' + DXServerClientFetchTimeout + '.';
 availableModesDescription['--ingest-limit <number>'] = 'Set the total bytes limit of chunks retained for analysis. Defaults to ' + defaultIngestChunksLimit + '.';
-availableModesDescription['--built-confirm-keywords <string>'] = 'Set a comma-separated list of keywords used to identify and confirm errors succesful build ingestion process.';
+availableModesDescription['--built-confirm-keywords <string>'] = 'Set a comma-separated list of keywords used to identify and confirm a successful build ingestion process.';
 availableModesDescription['--built-error-keywords <string>'] = 'Set a comma-separated list of keywords used to identify errors during the build ingestion process.';
 availableModesDescription['--cert <file_path>'] = 'Set custom SSL cert file.';
 availableModesDescription['--key <file_path>'] = 'Set custom SSL key file.';
 availableModesDescription['--root <folder_path>'] = 'Set the project root directory. Defaults to "' + mainFolder + '".';
 availableModesDescription['--public <folder_path>'] = 'Set custom public folder to serve.';
 availableModesDescription['--lang <folder_path>'] = 'Set custom lang folder for saving.';
-availableModesDescription['--watch <folder_path>'] = 'Add an extra directory for the hot-reload watcher to observe.';
+availableModesDescription['--watch <folder_path>'] = 'Add an extra directory for the hot-reload watcher to observe (required by the other "--watch-*" and "--shell" options).';
 availableModesDescription['--watch-ignore <string>'] = 'Set a comma-separated list of files or folders to be ignored on watching. Defaults to [' + (defaultIgnoredOnWatching.map(function(element){ return (typeof element === 'string' ? '"' + element + '"' : String(element)) })).join(', ') + ']';
 availableModesDescription['--watch-depth <number>'] = 'Set limits how many levels of subdirectories will be traversed for watching. Defaults to ' + defaultFileWatchingSubFoldersDepth + '.';
-availableModesDescription['--watch-command <cli_command>'] = 'Set a CLI command to execute when the "--watch" folder has change.';
+availableModesDescription['--watch-command <cli_command>'] = 'Set a CLI command to execute when the "--watch" folder has changed.';
 availableModesDescription['--watch-command-timeout <number>'] = 'Set the debounce timeout in milliseconds for the "--watch-command" execution. Defaults ' + defaultWatchCommandTimeoutTime + '.';
 availableModesDescription['--network <ip>'] = 'Set the network interface address (IPv4 or IPv6) that the server will bind to. Defaults to "' + defaultNetworkExposedTo + '".';
-availableModesDescription['--cache <number>'] = 'Set the "maxAge" in milliseconds for static files caching (not for "index.html"). Defaults to "' + defaultMaxAgeCache + '".';
+availableModesDescription['--cache <number>'] = 'Set the "maxAge" in milliseconds for static files caching (not for "index.html"). Defaults to "' + defaultMaxAgeCache + '" in "--prod" and 0 in "--dev" unless set explicitly.';
 availableModesDescription['--fallback <file_path>'] = 'Define the fallback file to be served when no route or static file matches the request.';
 
 let mkcert;
@@ -189,11 +190,11 @@ let versionReferenceFilePath = path.join(publicFolder, versionReferenceFile);
 
 const builtReferenceFile = '_built.tmp';
 const builtReferenceFileStdoutExt = '.stdout';
-const builtReferenceFilePath = path.join(coreFolder, builtReferenceFile);
+let builtReferenceFilePath = path.join(coreFolder, builtReferenceFile);
 const errorReferenceFile = '_error.tmp';
-const errorReferenceFilePath = path.join(coreFolder, errorReferenceFile);
+let errorReferenceFilePath = path.join(coreFolder, errorReferenceFile);
 const browserOpenReferenceFile = '_browserOpen.tmp';
-const browserOpenReferenceFilePath = path.join(coreFolder, browserOpenReferenceFile);
+let browserOpenReferenceFilePath = path.join(coreFolder, browserOpenReferenceFile);
 
 const updateStatusEndpoint = '/dx-update';
 const startUpdatesStatusEndpoint = '/dx-start-update';
@@ -203,6 +204,8 @@ const dxClientEndpoint = '/' + dxClientEndpointFileName;
 
 const certFileName = 'cert.crt';
 const certKeyFileName = 'cert.key';
+const certCAFileName = 'ca.crt';
+const certRenewBeforeExpirationTime = (1000 * 60 * 60 * 24 * 7);
 
 const pollingInterval = 2500;
 const checkingTimeSinceDisconnection = 3000;
@@ -230,7 +233,7 @@ let watchCommandReference;
 const DXClient = 'DX Client';
 const DXIPName = 'dx-ip';
 const DXTokenName = 'dx-token';
-const DXTokenValue = (Math.random() * Date.now()) + '';
+const DXTokenValue = crypto.randomBytes(16).toString('hex');
 
 async function setArgsAndDefaultConfig(){
     try {
@@ -326,6 +329,12 @@ async function setArgsAndDefaultConfig(){
                 'no-bundler': {
                     type: 'boolean'
                 },
+                'no-open': {
+                    type: 'boolean'
+                },
+                'no-csp': {
+                    type: 'boolean'
+                },
                 version: {
                     type: 'boolean'
                 },
@@ -337,17 +346,22 @@ async function setArgsAndDefaultConfig(){
         Object.assign(args, values);
     }
     catch(e){
+        Console.blue(DXServer);
         Console.error('Args error:', e.message);
-        printAvailableModes();
+        printAvailableModes(false);
     }
 
     if(args.version){
         printVersion();
     }
 
+    Console.blue(DXServer);
+
     if(args.help){
          printAvailableModes(true);
     }
+
+    warnIgnoredArguments();
 
     if(args['built-confirm-keywords']){
         builtIngestConfirmKeywordsList = commaSeparatedKeywordsList(args['built-confirm-keywords']);
@@ -403,6 +417,10 @@ async function setArgsAndDefaultConfig(){
 
     if(args.port){
         port = Number(args.port);
+        if(!Number.isInteger(port) || port < 1 || port > 65535){
+            Console.error('Invalid port:', args.port);
+            process.exit(1);
+        }
         if(SSLModeON && port === 80){ port = 443; }
         if(!SSLModeON && port === 443){ port = 80; }
     }
@@ -446,6 +464,11 @@ async function setArgsAndDefaultConfig(){
             watchFolder = path.join(mainFolder, watchFolderName);
             langFolder = path.join(mainFolder, langFolderName);
 
+            builtReferenceFilePath = path.join(coreFolder, builtReferenceFile);
+            errorReferenceFilePath = path.join(coreFolder, errorReferenceFile);
+            browserOpenReferenceFilePath = path.join(coreFolder, browserOpenReferenceFile);
+            customMiddlewareFilePath = path.join(mainFolder, customMiddlewareFileName);
+
             entryPointFilePath = path.join(publicFolder, entryPointFileName);
             versionReferenceFilePath = path.join(publicFolder, versionReferenceFile);
             fallbackFilePath = path.join(publicFolder, fallbackFileName);
@@ -482,7 +505,7 @@ async function setArgsAndDefaultConfig(){
         watchModeON = true;
 
         if(!await folderExists(args.watch, true)){
-            Console.warn('WATCH folder doesn\'t exists, watcher will be trigger if created.');
+            Console.warn('WATCH folder doesn\'t exist, the watcher will start working when it is created.');
         }
     }
 
@@ -506,7 +529,6 @@ async function setArgsAndDefaultConfig(){
     }
 
     if(args.network){
-        const net = require('net');
         networkExposedTo = net.isIP(args.network) != 0 ? args.network : defaultNetworkExposedTo;
     }
 
@@ -535,12 +557,13 @@ async function setArgsAndDefaultConfig(){
     if(args.fallback){
         let resolvedFallback = path.isAbsolute(args.fallback) ? path.resolve(path.normalize(args.fallback)) : path.resolve(publicFolder, path.normalize(args.fallback));
 
-        if(await fileExists(resolvedFallback) && resolvedFallback.startsWith(publicFolder)){
-            let statusByBasename = Number(path.basename(resolvedFallback).split('.'));
-            if(!isNaN(statusByBasename) && statusByBasename > 199 && statusByBasename < 600){ fallbackStatus = statusByBasename; }
+        if(await fileExists(resolvedFallback) && isInside(publicFolder, resolvedFallback)){
+            let statusByBasename = Number(path.basename(resolvedFallback).split('.')[0]);
+            if(Number.isInteger(statusByBasename) && statusByBasename > 199 && statusByBasename < 600){ fallbackStatus = statusByBasename; }
             fallbackFilePath = resolvedFallback;
         }
         else {
+            Console.warn('Fallback file not found or outside of the public folder:', args.fallback);
             fallbackFilePath = '';
         }
     }
@@ -552,6 +575,33 @@ async function setArgsAndDefaultConfig(){
 
     if(args['no-bundler']){
         noBundlerModeON = true;
+    }
+
+    if(args['no-open']){
+        noOpenModeON = true;
+    }
+
+    if(args['no-csp']){
+        noCSPModeON = true;
+    }
+}
+
+function warnIgnoredArguments(){
+    const dependencies = [
+        ['ingest', 'built'],
+        ['ingest-limit', 'built'],
+        ['watch-command', 'watch'],
+        ['watch-command-timeout', 'watch'],
+        ['watch-depth', 'watch'],
+        ['watch-ignore', 'watch'],
+        ['shell', 'watch-command'],
+        ['frontend-fetch-timeout', 'frontend']
+    ];
+
+    for(const [flag, requires] of dependencies){
+        if(typeof args[flag] !== 'undefined' && !args[requires]){
+            Console.warn('"--' + flag + '" requires "--' + requires + '" and it will be ignored.');
+        }
     }
 }
 
@@ -568,25 +618,7 @@ switch(serverMode){
             await writeFile(builtReferenceFilePath, compilationState);
             await writeFile(errorReferenceFilePath, '');
 
-            process.stdin.setEncoding('utf8');
-
-            let chunks = '';
-            process.stdin.on('data', async function(chunk){
-                chunks += chunk;
-                if(chunks.length > ingestChunksLimit){ chunks = chunks.slice(ingestChunksLimit * -1); }
-
-                Console.info('Ingesting data chunk...');
-                await analizeChunks(chunks);
-                chunks = chunks.slice(Math.round(ingestChunksLimit / 4) * -1); // Prevent data loss without concatenation of previous last string parts.
-            });
-
-            process.stdin.on('end', async function(){
-                Console.info('Ingestion end.');
-                await analizeChunks(chunks);
-                chunks = '';
-            });
-
-            process.stdin.resume();
+            startIngestion();
         }
         catch(e){
             Console.error('Ingestion error:', e.message);
@@ -594,6 +626,9 @@ switch(serverMode){
 
         if(!ingestModeON){
             await initDxServerModes();
+        }
+        else {
+            startWatchCommandOnly();
         }
     break;
 
@@ -605,7 +640,7 @@ switch(serverMode){
         Console.error('Server mode VALUES issue:');
         Console.warn('Dev/Prod mode:', serverMode);
         Console.warn('SSL off:', serverSSL);
-        Console.green('Available modes:', availableModesDescription);
+        printAvailableModes(false);
 }
 
 const sigterm = 'SIGTERM';
@@ -646,11 +681,29 @@ process.on('exit', function(){
 
 })();
 
+function killProcessTree(child){
+    if(!child || !child.pid || child.exitCode !== null || child.signalCode !== null){ return; }
+
+    try {
+        if(process.platform === 'win32'){
+            const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+            killer.on('error', function(){ child.kill(); });
+        }
+        else {
+            process.kill(-child.pid, 'SIGTERM'); // The command runs detached, as leader of its own process group.
+        }
+    }
+    catch(e){
+        child.kill();
+    }
+}
+
 function stopWatchCommand(){
     try {
         if(watchCommandReference){
             Console.info('Stopping watch command execution...');
-            watchCommandReference.kill();
+            killProcessTree(watchCommandReference);
+            watchCommandReference = undefined;
         }
     }
     catch(e){
@@ -658,7 +711,52 @@ function stopWatchCommand(){
     }
 }
 
+function isInside(parent, child){
+    const relative = path.relative(path.resolve(parent), path.resolve(child));
+    return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
+}
+
+function escapeHTML(value){
+    return String(value).replace(/[&<>"']/g, function(character){
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[character];
+    });
+}
+
+function isLoopbackAddress(address){
+    return address === localhost || address === localhostIPv6 || address === '::ffff:127.0.0.1' || /^127\./.test(address);
+}
+
+function isTrustedHostHeader(hostHeader){
+    if(typeof hostHeader !== 'string' || !hostHeader){ return false; }
+
+    const hostname = (hostHeader.charAt(0) === '[' ? hostHeader.slice(1, hostHeader.indexOf(']')) : hostHeader.replace(/:\d+$/, '')).toLowerCase();
+    const machineName = os.hostname().toLowerCase();
+
+    return net.isIP(hostname) !== 0 || hostname === localhost || hostname.endsWith('.' + localhost) || hostname === machineName || hostname === machineName + '.local';
+}
+
+function isSameOriginRequest(req){
+    if(req.headers['sec-fetch-site'] === 'cross-site'){ return false; }
+
+    const origin = req.headers.origin;
+    if(!origin){ return true; }
+
+    try {
+        return new URL(origin).host === req.headers.host;
+    }
+    catch(e){
+        return false;
+    }
+}
+
+function requestAcceptsHTMLDocument(req){
+    const accept = String(req.headers.accept || '').toLowerCase();
+    return accept.includes('text/html') || accept.includes('application/xhtml+xml');
+}
+
 async function openBrowser(localhostURL, bypass){
+    if(noOpenModeON){ return; }
+
     try {
         const isBrowserOpen = await fileExists(browserOpenReferenceFilePath);
         if(bypass || (!isBrowserOpen && !await dateInsideFileIsRecent(browserOpenReferenceFilePath))){
@@ -693,7 +791,17 @@ async function isRecentFile(file, time){
     return false;
 }
 
-async function ensureCertificatesAndCA(){
+function certificateIsExpiring(pem){
+    try {
+        const expiration = new Date(new crypto.X509Certificate(pem).validTo).getTime();
+        return isNaN(expiration) || (expiration - Date.now()) < certRenewBeforeExpirationTime;
+    }
+    catch(e){
+        return true;
+    }
+}
+
+async function ensureCertificatesAndCA(force){
     if(!SSLModeON){
         Console.info('SSL disabled, skipping certificate generation.');
         return;
@@ -703,9 +811,10 @@ async function ensureCertificatesAndCA(){
 
     const crtPath = path.join(certsFolder, certFileName);
     const keyPath = path.join(certsFolder, certKeyFileName);
+    const caPath = path.join(certsFolder, certCAFileName);
 
     try {
-        if(await fileExists(keyPath) && await fileExists(crtPath)){
+        if(!force && await fileExists(keyPath) && await fileExists(crtPath)){
             Console.info('SSL certificates already exist. Skipping generation.');
             return;
         }
@@ -721,29 +830,31 @@ async function ensureCertificatesAndCA(){
         await deleteFile(keyPath, true);
 
         const CA = await mkcert.createCA({
-            organization: 'OKZGN',
-            countryCode: 'EC',
-            state: 'Pichincha',
-            locality: 'Quito',
-            validityDays: 365 * 3
+            organization: 'DX Server',
+            countryCode: 'US',
+            state: 'Local',
+            locality: 'Local',
+            validity: 365 * 3
         });
 
-        Console.info('MKCERT CA installation ensured.');
+        Console.info('Local CA created (it is NOT installed in the system trust store).');
 
         const cert = await mkcert.createCert({
-            domains: [localhost],
+            domains: [localhost, localhostIP, localhostIPv6],
             validity: 365,
             ca: CA
         });
 
-        Console.info('Certificate for "' + localhost + '" generated.');
+        Console.info('Certificate for "' + [localhost, localhostIP, localhostIPv6].join('", "') + '" generated.');
 
         await writeFile(crtPath, cert.cert);
         await writeFile(keyPath, cert.key);
+        await writeFile(caPath, CA.cert);
 
         Console.log('Self signed SSL certificates generated.');
-        Console.log('Cert path:', keyPath);
-        Console.log('Key path:', crtPath);
+        Console.log('Cert path:', crtPath);
+        Console.log('Key path:', keyPath);
+        Console.log('CA path (trust this file in your OS/browser to remove the security warning):', caPath);
 
         return { key: cert.key, cert: cert.cert };
     }
@@ -877,16 +988,12 @@ async function deleteFile(_path, silence){
 }
 
 function executionLocked(asyncFn){
-    executionLock = executionLock.then(async function(){
-        try {
-            await asyncFn();
-        }
-        catch(e){
-            Console.error('Execution locked error:', e.message);
-            throw e;
-        }
+    const run = executionLock.then(asyncFn);
+    // A failed execution must reach its own caller but never break the queue for the next ones.
+    executionLock = run.catch(function(e){
+        Console.error('Execution locked error:', e.message);
     });
-    return executionLock;
+    return run;
 }
 
 async function writeFile(_path, content, silence){
@@ -915,12 +1022,6 @@ async function readFile(_path, silence){
 }
 
 async function createMainFolders(){
-    if(!await folderExists(coreFolder)){
-        await createFolder(coreFolder);
-    }
-}
-
-async function createMainSubFolders(){
     if(!await folderExists(coreFolder)){
         await createFolder(coreFolder);
     }
@@ -967,17 +1068,21 @@ function printVersion(){
     process.exit(0);
 }
 
-function printAvailableModes(mode){
-    let _mode = mode === false;
-    Console[_mode ? 'warn' : 'info']('Available server modes:', availableModesDescription);
-    process.exit(_mode ? 1 : 0);
+function printAvailableModes(isHelp){
+    const flags = Object.keys(availableModesDescription);
+    const width = Math.max(...flags.map(function(flag){ return flag.length; }));
+    const lines = flags.map(function(flag){ return '  ' + flag.padEnd(width + 2) + availableModesDescription[flag]; });
+
+    // Usage output is never silenced and goes to stderr when it is the result of an error.
+    console[isHelp ? 'log' : 'error'](['Available server modes:'].concat(lines).join('\n'));
+    process.exit(isHelp ? 0 : 1);
 }
 
 function closeConnectedWithHotReload(ip){
     if(ip in connectedWithHotReload){
         clearInterval(connectedWithHotReload[ip].messages_interval);
         clearInterval(connectedWithHotReload[ip].heartbeat_interval);
-        writeToSuscribers(connectedWithHotReload[ip], 'update', false);
+        writeToSubscribers(connectedWithHotReload[ip], 'update', false);
         delete connectedWithHotReload[ip];
     }
 }
@@ -1002,9 +1107,25 @@ function initializeConnectedIP(object, req, defaultConfig){
     return ip;
 }
 
+function ignoredOnWatching(_path){
+    if(_path === browserOpenReferenceFilePath){ return true; }
+
+    const segments = String(_path).split(/[\\\/]+/);
+    for(const rule of customIgnoredOnWatching){
+        if(rule instanceof RegExp){
+            if(rule.test(_path)){ return true; }
+        }
+        else if(segments.includes(rule)){
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function startWatching(targets, fn, options, error){
     let debounce;
-    let watcher = chokidar.watch(targets, Object.assign({ depth: fileWatchingSubFoldersDepth, persistent: true }, options || { ignored: [ browserOpenReferenceFilePath, ...customIgnoredOnWatching ] }));
+    let watcher = chokidar.watch(targets, Object.assign({ depth: fileWatchingSubFoldersDepth, persistent: true, ignored: ignoredOnWatching }, options || {}));
     watcher.on('all', function(event, _path){
         clearTimeout(debounce);
         debounce = setTimeout(function(){
@@ -1035,21 +1156,21 @@ function normalizeClient(object){
     return ((object.ip === localhostIPv6 || object.ip === localhostIP || object.ip === localhost) ? localhost : object.ip || localhost);
 }
 
-function writeToAllSuscribers(suscribers, message, mode){
-    for(let suscriber of Object.keys(suscribers)){
-        writeToSuscribers(suscribers[suscriber], message, mode);
+function writeToAllSubscribers(subscribers, message, mode){
+    for(let subscriber of Object.keys(subscribers)){
+        writeToSubscribers(subscribers[subscriber], message, mode);
     }
 }
 
-function writeToSuscribers(suscribers, message, mode){
-    if(suscribers.connections){
-        suscribers.connections.forEach(function(connection){
-            writeToSuscriber(connection, message, suscribers.connections, mode);
+function writeToSubscribers(subscribers, message, mode){
+    if(subscribers.connections){
+        subscribers.connections.forEach(function(connection){
+            writeToSubscriber(connection, message, subscribers.connections, mode);
         });
     }
 }
 
-function writeToSuscriber(connection, message, connections, mode){
+function writeToSubscriber(connection, message, connections, mode){
     if(connection.writableEnded || connection.destroyed){
         if(connections){ connections.delete(connection); }
         return false;
@@ -1123,7 +1244,7 @@ function cleanIPFrom(ip, mode){
 }
 
 function commaSeparatedKeywordsList(keywords, format){
-    keywords = keywords.replace(/^,+\s*|\s*,+$/, '').split(/\s*,+\s*/);
+    keywords = keywords.trim().replace(/^[\s,]+|[\s,]+$/g, '').split(/\s*,+\s*/).filter(Boolean);
     switch(format){
         case 'regexp':
             keywords.forEach(function(keyword, index){
@@ -1140,7 +1261,7 @@ function commaSeparatedKeywordsList(keywords, format){
     return keywords;
 }
 
-function addSuscriberConnection(ip, res, connectionsMap){
+function addSubscriberConnection(ip, res, connectionsMap){
     connectionsMap[ip].connections.add(res);
     res.on('error', function(e){
         Console.warn('Connection stream error:', e.message);
@@ -1150,7 +1271,7 @@ function addSuscriberConnection(ip, res, connectionsMap){
 
 async function initDxServerModes(){
     await loadOpen();
-    await createMainSubFolders();
+    await createMainFolders();
     await deleteOldStateFiles();
 
     Console.info('Server mode:', serverMode);
@@ -1168,7 +1289,16 @@ async function initDxServerModes(){
             }
         };
     }
+    if(noCSPModeON){
+        helmetConfig.contentSecurityPolicy = false;
+    }
     app.use(helmet(helmetConfig));
+
+    // Compression must be registered before any handler that ends the response.
+    if(prodModeON){
+        const compression = require('compression');
+        app.use(compression());
+    }
 
     const cors = require('cors');
     app.use(cors({ origin: true, credentials: true }));
@@ -1222,7 +1352,7 @@ async function initDxServerModes(){
             let connectedIP;
             try {
                 connectedIP = initializeConnectedIP(connectedWithHotReload, req, statusHandlerWritesConfig);
-                addSuscriberConnection(connectedIP, res, connectedWithHotReload);
+                addSubscriberConnection(connectedIP, res, connectedWithHotReload);
             }
             catch(e){
                 Console.error(startUpdatesStatusEndpoint, 'error:', e.message);
@@ -1255,7 +1385,7 @@ async function initDxServerModes(){
                     if(typeof connectedWithHotReload[ip].fast_callback !== 'function'){
                         connectedWithHotReload[ip].fast_callback = function(){
                             if(connectedWithHotReload[ip].connections && connectedWithHotReload[ip].connections.size > 0){
-                                writeToSuscribers(connectedWithHotReload[ip], updateState);
+                                writeToSubscribers(connectedWithHotReload[ip], updateState);
                             }
                             else {
                                 openBrowser(getLocalhostURL(), true);
@@ -1290,7 +1420,7 @@ async function initDxServerModes(){
         async function buildingWatcher(watcherEvent, _path){
             try {
                 if(noBundlerModeON && _path){
-                    return writeToAllSuscribers(connectedWithHotReload, updateState);
+                    return writeToAllSubscribers(connectedWithHotReload, updateState);
                 }
 
                 let errorReference = await fileExists(errorReferenceFilePath);
@@ -1321,7 +1451,7 @@ async function initDxServerModes(){
                     let status = (lastInodeReference === indexReference.mtimeMs ? lastInodeReference : updateState);
                     lastStatusReference = status;
                     lastInodeReference = indexReference.mtimeMs;
-                    writeToAllSuscribers(connectedWithHotReload, status);
+                    writeToAllSubscribers(connectedWithHotReload, status);
                 }
             }
             catch(e){
@@ -1331,10 +1461,10 @@ async function initDxServerModes(){
                 switch(e.code){
                     case 'ENOENT':
                         message = e.message;
-                        writeToAllSuscribers(connectedWithHotReload, 'file-missing');
+                        writeToAllSubscribers(connectedWithHotReload, 'file-missing');
                     break;
                     default:
-                        writeToAllSuscribers(connectedWithHotReload, builtErrorReference || startingState);
+                        writeToAllSubscribers(connectedWithHotReload, builtErrorReference || startingState);
                 }
 
                 let isSamePreviousMessage = (message === lastMessageErrorReference && builtErrorReference);
@@ -1363,7 +1493,7 @@ async function initDxServerModes(){
             let connectedIP;
             try {
                 connectedIP = initializeConnectedIP(connectedWithHotReload, req, statusHandlerWritesConfig);
-                addSuscriberConnection(connectedIP, res, connectedWithHotReload);
+                addSubscriberConnection(connectedIP, res, connectedWithHotReload);
             }
             catch(e){
                 Console.error(updateStatusEndpoint, 'error:', e.message);
@@ -1375,10 +1505,11 @@ async function initDxServerModes(){
 
             clearInterval(connectedWithHotReload[connectedIP].heartbeat_interval);
             connectedWithHotReload[connectedIP].heartbeat_interval = setInterval(function(){
-                writeToSuscriber(res, Date.now());
+                // Heartbeat for every open tab of this client (not only the last connection).
+                writeToSubscribers(connectedWithHotReload[connectedIP], Date.now());
             }, heartbeatIntervalTime);
 
-            writeToSuscribers(connectedWithHotReload[connectedIP], '1');
+            writeToSubscribers(connectedWithHotReload[connectedIP], '1');
 
             req.on('close', async function(){
                 if(lastStatusReference === updateState){
@@ -1394,75 +1525,82 @@ async function initDxServerModes(){
         });
 
         app.post(langEndpoint, async function(req, res){
-            if(!req.body){
-                res.status(400).end();
-                Console.error(langEndpoint, 'Body required.');
-                return;
+            // This endpoint writes to disk: only same-origin requests addressed to a trusted host name are accepted.
+            if(!isSameOriginRequest(req) || !isTrustedHostHeader(req.headers.host)){
+                Console.error(langEndpoint, 'Cross-origin request or untrusted host rejected.');
+                return res.status(403).end();
             }
 
-            Console.log(langEndpoint, req.body.dir, req.body.code);
+            const body = req.body;
+            if(!body || typeof body !== 'object' || typeof body.dir !== 'string' || typeof body.code !== 'string' || !body.keys || typeof body.keys !== 'object' || Array.isArray(body.keys)){
+                Console.error(langEndpoint, 'Body required: { dir: string, code: string, keys: object }.');
+                return res.status(400).end();
+            }
+
+            const dirName = path.basename(path.normalize(body.dir));
+            const codeName = path.basename(path.normalize(body.code));
+            if(['', '.', '..'].includes(dirName) || ['', '.', '..'].includes(codeName)){
+                Console.error(langEndpoint, 'Invalid "dir" or "code".');
+                return res.status(400).end();
+            }
+
+            const folderToSave = path.join(langFolder, dirName);
+            const fileToSave = path.join(folderToSave, codeName + '.json');
+
+            if(!isInside(langFolder, fileToSave)){
+                Console.error(langEndpoint, 'Path outside of the lang folder rejected.');
+                return res.status(403).end();
+            }
+
+            Console.log(langEndpoint, body.dir, body.code);
 
             try {
-                let folderToSave = path.join(langFolder, path.basename(path.normalize(req.body.dir)));
-                let fileToSave = path.join(folderToSave, path.basename(path.normalize(req.body.code)) + '.json');
+                const result = await executionLocked(async function(){
+                    let previousKeys = {};
 
-                if(!fileToSave.startsWith(path.resolve(langFolder))){
-                    res.status(403).end();
-                    return;
-                }
-
-                await executionLocked(async function(){
-                    let previousKeys = (await readFile(fileToSave)).toString() || '{}';
-                    if(previousKeys){
+                    if(await fileExists(fileToSave)){
                         try {
-                            previousKeys = JSON.parse(previousKeys);
-                            let totalPreviousKeys = Object.keys(previousKeys).length;
-                            let newTargetKeys = Object.keys(req.body.keys);
-                            let totalTargetKeys = newTargetKeys.length;
-
-                            if(totalTargetKeys < totalPreviousKeys){
-                                res.status(400).end();
-                                throw new Error('Trying to save less keys than the original file:', totalTargetKeys + '.', 'Current total keys:', totalPreviousKeys);
-                            }
-                            else {
-                                let keysDifference = totalTargetKeys - totalPreviousKeys;
-                                let existentKeys = 0;
-
-                                for(let newKey of newTargetKeys){
-                                    if(req.body.keys[newKey] === previousKeys[newKey]){
-                                        existentKeys++;
-                                    }
-                                }
-
-                                let realDifference = totalTargetKeys - existentKeys;
-                                let errorDifference = keysDifference - realDifference;
-                                if(keysDifference !== realDifference){
-                                    throw new Error('Target keys and original keys was compared and "' + errorDifference + '" doesn\'t match.');
-                                }
-
-                                if(!await folderExists(folderToSave)){
-                                    await createFolder(folderToSave, { recursive: true });
-                                }
-
-                                if(!await fileExists(fileToSave)){
-                                    await writeFile(fileToSave, '{}');
-                                }
-
-                                await writeFile(fileToSave, JSON.stringify(req.body.keys));
-                                Console.info(langEndpoint, 'Saved keys:', newTargetKeys.length);
-                            }
+                            previousKeys = JSON.parse((await readFile(fileToSave)).toString() || '{}');
                         }
                         catch(e){
-                            Console.error(langEndpoint, 'JSON file parse error:', e.message);
+                            return { status: 409, message: 'The existing file is not a valid JSON: ' + e.message };
+                        }
+
+                        if(!previousKeys || typeof previousKeys !== 'object' || Array.isArray(previousKeys)){
+                            return { status: 409, message: 'The existing file is not a JSON object.' };
                         }
                     }
+
+                    // Existing keys can be edited or kept, but never removed.
+                    const missingKeys = Object.keys(previousKeys).filter(function(key){ return !Object.hasOwn(body.keys, key); });
+                    if(missingKeys.length){
+                        return { status: 400, message: 'Trying to save less keys than the original file. Missing keys: ' + missingKeys.length + '. Current total keys: ' + Object.keys(previousKeys).length + '.' };
+                    }
+
+                    if(!await folderExists(folderToSave)){
+                        await createFolder(folderToSave, { recursive: true });
+                    }
+
+                    // Write to a temporary file and rename it: the target file is never left half written.
+                    const temporaryFile = fileToSave + '.tmp';
+                    await writeFile(temporaryFile, JSON.stringify(body.keys));
+                    await fs.promises.rename(temporaryFile, fileToSave);
+
+                    return { status: 200, total: Object.keys(body.keys).length };
                 });
+
+                if(result.status !== 200){
+                    Console.error(langEndpoint, result.message);
+                    return res.status(result.status).end();
+                }
+
+                Console.info(langEndpoint, 'Saved keys:', result.total);
+                return res.status(200).end();
             }
             catch(e){
                 Console.error(langEndpoint, 'Error:', e.message);
+                return res.status(500).end();
             }
-
-            res.status(200).end();
         });
     }
 
@@ -1476,30 +1614,54 @@ async function initDxServerModes(){
         return res.status(200).send(dxDevModeScript(req.ip));
     });
 
-    if (await fileExists(customMiddlewareFilePath)) {
+    const customMiddlewareFoundOnStart = await fileExists(customMiddlewareFilePath);
+    if(customMiddlewareFoundOnStart){
         Console.info('Loading custom middleware from:', customMiddlewareFileName);
+    }
 
-        app.use(function(req, res, next) {
-            if (req.path.startsWith('/dx-')) {
+    app.use(function(req, res, next) {
+        if (req.path.startsWith('/dx-')) {
+            return next();
+        }
+
+        // On DEV mode the file can be created, changed or removed without restarting the server.
+        if (!(devModeON ? fs.existsSync(customMiddlewareFilePath) : customMiddlewareFoundOnStart)) {
+            return next();
+        }
+
+        let nextCalled = false;
+        const safeNext = function(error) {
+            nextCalled = true;
+            return next(error);
+        };
+        const recover = function(e) {
+            Console.error('Custom middleware error:', e.message);
+            if (!nextCalled && !res.headersSent) {
+                nextCalled = true;
+                next();
+            }
+        };
+
+        try {
+            // Clean cache to Hot-Reload the middleware if Dev mode is ON
+            if (devModeON) {
+                delete require.cache[require.resolve(customMiddlewareFilePath)];
+            }
+
+            const userMiddleware = require(customMiddlewareFilePath);
+
+            if (typeof userMiddleware !== 'function') {
                 return next();
             }
-            try {
-                // Clean cache to Hot-Reload the middleware if Dev mode is ON
-                if (devModeON) {
-                    delete require.cache[require.resolve(customMiddlewareFilePath)];
-                }
 
-                const userMiddleware = require(customMiddlewareFilePath);
-
-                if (typeof userMiddleware === 'function') {
-                    return userMiddleware(req, res, next);
-                }
-            } catch (e) {
-                Console.error('Custom middleware error:', e.message);
+            const result = userMiddleware(req, res, safeNext);
+            if (result && typeof result.then === 'function') {
+                result.then(undefined, recover);
             }
-            next();
-        });
-    }
+        } catch (e) {
+            recover(e);
+        }
+    });
 
     function clearIPFromControlMap(clearLimit){
         clearLimit = (clearLimit === true) ? 1 : (isNaN(clearLimit) ? (tryToRedirectOverflowIPsCount >= 2 ? Math.round(tryToRedirectOverflowIPsCount / 2) : 0) : clearLimit);
@@ -1522,6 +1684,10 @@ async function initDxServerModes(){
     let entryPointTimestamp;
     let currentEntryPointStat;
     app.use(async function(req, res, next){
+        if(req.method !== 'GET' && req.method !== 'HEAD'){
+            return next();
+        }
+
         let ipFrom = cleanIPFrom(req.ip);
 
         if(tryToRedirectIPsCount > connectedIPsFromLimit){
@@ -1536,22 +1702,34 @@ async function initDxServerModes(){
         }
 
         const ext = path.extname(req.path).toLowerCase();
-        const acceptsHTML = req.accepts('html');
-        //const acceptsResource = req.accepts(['image/*', 'css', 'js', 'json']);
 
+        // Only browser navigations (explicit "text/html" in Accept) are routed to the entry point; "fetch" and "XHR" calls (Accept: */*) are not.
         let isHTML = ext === '' || ext === '.html' || ext === '.htm';
-        if(!isHTML || !acceptsHTML){
+        if(!isHTML || !requestAcceptsHTMLDocument(req)){
             return next();
         }
 
-        if (isHTML && req.path !== '/' && req.path !== '/' + entryPointFileName) {
-          const htmlDirPath = path.join(publicFolder, req.path);
-          if (htmlDirPath.startsWith(path.resolve(publicFolder))) {
-            const htmlDirStat = await stat(htmlDirPath);
-            if (htmlDirStat && htmlDirStat.isFile()) {
+        if (req.path !== '/' && req.path !== '/' + entryPointFileName) {
+          let requestedPath;
+          try {
+            requestedPath = decodeURIComponent(req.path);
+          }
+          catch(e){
+            return next();
+          }
+
+          const htmlFilePath = path.join(publicFolder, requestedPath);
+          if (isInside(publicFolder, htmlFilePath)) {
+            const htmlFileStat = await stat(htmlFilePath);
+            if (htmlFileStat && htmlFileStat.isFile()) {
+              // Existing files without HTML extension, and any file on PROD (nothing to inject), go to the static handler.
+              if (ext === '' || prodModeON) {
+                return next();
+              }
+
               setDefaultHeaders(res, 'text/html');
 
-              let htmlContent = (await readFile(htmlDirPath)).toString();
+              let htmlContent = (await readFile(htmlFilePath)).toString();
               return res.status(200).send(injectDxClientScript(htmlContent));
             }
           }
@@ -1580,7 +1758,7 @@ async function initDxServerModes(){
 <head>
 ${dxDefaultHTMLHead(ipFrom)}
 </head>
-<body>${DXServer}<br>${ errorReference ? 'Build error: ' + (errorReference.slice(0, 64) + ' ...') : 'Connecting entry point (' + tryToRedirect[ipFrom] + ') ...' }<br><br>( ${entryPointFilePath} )</body>
+<body>${DXServer}<br>${ errorReference ? 'Build error: ' + escapeHTML(errorReference.slice(0, 64) + ' ...') : 'Connecting entry point (' + tryToRedirect[ipFrom] + ') ...' }<br><br>( ${escapeHTML(entryPointFilePath)} )</body>
 </html>
 `);
             }
@@ -1591,7 +1769,7 @@ ${dxDefaultHTMLHead(ipFrom)}
 <head>
 ${dxDefaultHTMLHead(ipFrom)}
 </head>
-<body>${DXServer}<br>Trying to connect entry point (${tryToRedirect[ipFrom]}) ...<br><br>( ${entryPointFilePath} )</body>
+<body>${DXServer}<br>Trying to connect entry point (${tryToRedirect[ipFrom]}) ...<br><br>( ${escapeHTML(entryPointFilePath)} )</body>
 </html>
 `);
         }
@@ -1609,23 +1787,20 @@ ${dxDefaultHTMLHead(ipFrom)}
         return res.status(404).end();
     });
 
-    if(prodModeON){
-        const compression = require('compression');
-        app.use(compression());
-    }
-
     let certFile;
     let certKey;
     if(SSLModeON){
+        const customCertificates = !!(serverSSLCert && serverSSLKey);
+
         try {
-            certFile = await readFile(serverSSLCert ? path.join(serverSSLCert) : path.join(certsFolder, certFileName), true);
-            certKey = await readFile(serverSSLKey ? path.join(serverSSLKey) : path.join(certsFolder, certKeyFileName), true);
+            certFile = await readFile(customCertificates ? path.join(serverSSLCert) : path.join(certsFolder, certFileName), true);
+            certKey = await readFile(customCertificates ? path.join(serverSSLKey) : path.join(certsFolder, certKeyFileName), true);
             if(!certFile || !certKey){
                 throw new Error('Cannot read certificate files.');
             }
         }
         catch(e){
-            if(serverSSLCert && serverSSLKey){
+            if(customCertificates){
                 Console.error('Error trying to use your SSL certificates:', e.message);
                 process.exit(1);
             }
@@ -1634,9 +1809,19 @@ ${dxDefaultHTMLHead(ipFrom)}
             Console.error('- Cert file expected path:', path.join(certsFolder, certFileName));
             Console.error('- Key file expected path:', path.join(certsFolder, certKeyFileName));
 
+            certFile = '';
+            certKey = '';
+        }
+
+        const renewCertificates = !customCertificates && !!certFile && certificateIsExpiring(certFile);
+        if(renewCertificates){
+            Console.warn('The self signed SSL certificate is expired or about to expire.');
+        }
+
+        if(!certFile || !certKey || renewCertificates){
             Console.info('Trying to create self signed certificates:');
             try {
-                let certificates = await ensureCertificatesAndCA();
+                let certificates = await ensureCertificatesAndCA(renewCertificates);
                 if(certificates){
                     certFile = certificates.cert;
                     certKey = certificates.key;
@@ -1650,32 +1835,19 @@ ${dxDefaultHTMLHead(ipFrom)}
                 process.exit(1);
             }
         }
-
-        try {
-            await stopPortProcess(port);
-
-            protocol = 'https://';
-            const httpsOptions = { cert: certFile, key: certKey };
-            server = https.createServer(httpsOptions, app).listen(port, networkExposedTo, function(){
-                dxServerReadyOn(port);
-            });
-        }
-        catch(e){
-            dxServerNotReady(e);
-        }
     }
-    else {
-        try {
-            await stopPortProcess(port);
 
-            protocol = 'http://';
-            server = app.listen(port, networkExposedTo, function(){
-                dxServerReadyOn(port);
-            });
-        }
-        catch(e){
-            dxServerNotReady(e);
-        }
+    try {
+        await stopPortProcess(port);
+
+        protocol = SSLModeON ? 'https://' : 'http://';
+        server = (SSLModeON ? https.createServer({ cert: certFile, key: certKey }, app) : app).listen(port, networkExposedTo, function(){
+            dxServerReadyOn(port);
+        });
+    }
+    catch(e){
+        dxServerNotReady(e);
+        process.exit(1);
     }
 
     server.on('error', function(e){
@@ -1686,6 +1858,9 @@ ${dxDefaultHTMLHead(ipFrom)}
         }
         else if(e.code === 'EADDRNOTAVAIL'){
             Console.error('Server ADDRESS NOT AVAILABLE.');
+        }
+        else if(e.code === 'EACCES'){
+            Console.error('Server PORT requires elevated privileges. Use a port above 1024 (e.g. "--port 8080").');
         }
         else {
             closeAndExit = false;
@@ -1713,6 +1888,8 @@ function identifyPositionToInjectClient(html){
 }
 
 function injectDxClientScript(html){
+    if(prodModeON){ return html; } // The client script only exists on DEV mode.
+
     let dxClientScript = "\n" + '<!--' + DXClient + ' Injected Script -->' + "\n" + '<script src="' + dxClientEndpoint + '"></script>' + "\n";
     let canInject = identifyPositionToInjectClient(html);
     return canInject === -1 ? (html + dxClientScript) : (html.slice(0, canInject.position) + dxClientScript + canInject.tag);
@@ -1727,96 +1904,197 @@ function setDefaultHeaders(res, contentType){
     if(contentType){ res.setHeader('Content-Type', contentType); }
 }
 
-function searchInChunks(chunks, keyword){
-    try { keyword = new RegExp(keyword, 'i'); }
-    catch(e){ }
-    return chunks.search(keyword) !== -1;
+const ingest = {
+    buffer: '',
+    lastDataTime: 0,
+    errorKeyword: false,
+    lastState: '',
+    stdoutTimeout: undefined,
+    writeQueue: Promise.resolve()
+};
+
+function ingestEnqueue(asyncFn){
+    ingest.writeQueue = ingest.writeQueue.then(asyncFn).catch(function(e){
+        Console.error('Ingesting error:', e.message);
+    });
+    return ingest.writeQueue;
 }
 
-async function analizeChunks(chunks){
-    let _error = false;
-    let _error_keywords = [];
-    for(let keyword of builtIngestErrorKeywordsList){
-        if(searchInChunks(chunks, keyword)){
-            _error = keyword;
-            break;
-        }
-        _error_keywords.push(keyword);
+function startIngestion(){
+    process.stdin.setEncoding('utf8');
+
+    process.stdin.on('data', function(chunk){
+        if(!silentModeON){ process.stdout.write(chunk); } // The piped process output is not swallowed.
+        ingestChunk(chunk);
+    });
+
+    process.stdin.on('end', function(){
+        Console.info('Ingestion end.');
+        flushIngestedStdout();
+    });
+
+    process.stdin.resume();
+}
+
+function flushIngestedStdout(){
+    clearTimeout(ingest.stdoutTimeout);
+    ingest.stdoutTimeout = undefined;
+    const snapshot = ingest.buffer;
+    return ingestEnqueue(function(){ return writeFile(builtReferenceFilePath + builtReferenceFileStdoutExt, snapshot); });
+}
+
+function ingestChunk(chunk){
+    const now = Date.now();
+
+    // Output after a quiet period belongs to a new build cycle: an old error must not stick forever.
+    if((now - ingest.lastDataTime) > ingestQuietGapTime){
+        ingest.errorKeyword = false;
+    }
+    ingest.lastDataTime = now;
+
+    // Only the new data is analyzed (plus a short tail, so keywords split between two chunks are found).
+    const tail = ingest.buffer.slice(-ingestOverlapLength);
+    ingest.buffer += chunk;
+    if(ingest.buffer.length > ingestChunksLimit){ ingest.buffer = ingest.buffer.slice(ingestChunksLimit * -1); }
+
+    const analysis = analyzeChunks(tail + chunk, tail.length);
+
+    if(analysis.confirm){
+        ingest.errorKeyword = false;
+    }
+    else if(analysis.error){
+        ingest.errorKeyword = analysis.error;
     }
 
-    let _confirm = false;
-    if(builtIngestConfirmKeywordsList.length){
-        for(let keyword of builtIngestConfirmKeywordsList){
-            if(searchInChunks(chunks, keyword)){
-                _confirm = keyword;
-                break;
-            }
+    const state = ingest.errorKeyword ? errorState : builtState;
+    const errorKeyword = ingest.errorKeyword;
+
+    ingestEnqueue(async function(){
+        await writeFile(builtReferenceFilePath, state);
+        await writeFile(errorReferenceFilePath, errorKeyword || '');
+    });
+
+    clearTimeout(ingest.stdoutTimeout);
+    ingest.stdoutTimeout = setTimeout(flushIngestedStdout, ingestStdoutWriteDelay);
+
+    if(state !== ingest.lastState || analysis.error || analysis.confirm){
+        ingest.lastState = state;
+        Console.warn(DXServer, 'Build result:', state);
+        if(state === errorState){
+            Console.warn('Error keyword detected:', errorKeyword);
+        }
+        else if(analysis.confirm){
+            Console.warn('Confirm keyword detected:', analysis.confirm);
+        }
+        else {
+            Console.warn('NOT DETECTED error keywords.');
         }
     }
+}
 
-    let _state = (!_confirm && _error ? errorState : builtState);
+function searchInChunks(text, keyword, minEnd){
+    let expression;
     try {
-        await writeFile(builtReferenceFilePath + builtReferenceFileStdoutExt, chunks);
-        await writeFile(builtReferenceFilePath, _state);
-        if(_error){
-            await writeFile(errorReferenceFilePath, _error);
-        }
+        expression = new RegExp(keyword, 'gi');
     }
     catch(e){
-        Console.error('Ingesting end error:', e.message);
+        expression = new RegExp(String(keyword).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
     }
 
-    Console.warn(DXServer, 'Build result:', _state);
-    switch(_state){
-        case errorState:
-            Console.warn('Error keyword detected:', _error);
-        break;
-        case builtState:
-            if(_confirm){
-                Console.warn('Confirm keyword detected:', _confirm);
-            }
-            else {
-                Console.warn('NOT DETECTED error keywords.');
-            }
-        break;
+    let match;
+    while((match = expression.exec(text)) !== null){
+        if(match[0] === ''){
+            expression.lastIndex++;
+            continue;
+        }
+        // Matches that end inside the already analyzed tail were detected before.
+        if((match.index + match[0].length) > (minEnd || 0)){ return true; }
     }
+
+    return false;
+}
+
+function analyzeChunks(text, analyzedLength){
+    let error = false;
+    for(let keyword of builtIngestErrorKeywordsList){
+        if(searchInChunks(text, keyword, analyzedLength)){
+            error = keyword;
+            break;
+        }
+    }
+
+    let confirm = false;
+    for(let keyword of builtIngestConfirmKeywordsList){
+        if(searchInChunks(text, keyword, analyzedLength)){
+            confirm = keyword;
+            break;
+        }
+    }
+
+    return { error, confirm };
+}
+
+function splitCommand(command){
+    const parts = [];
+    const expression = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    let match;
+    while((match = expression.exec(command)) !== null){
+        parts.push(typeof match[1] !== 'undefined' ? match[1] : (typeof match[2] !== 'undefined' ? match[2] : match[3]));
+    }
+    return parts;
+}
+
+function startWatchCommandOnly(){
+    if(!watchCommandModeON){
+        if(watchModeON){ Console.warn('Ingest only mode: "--watch" has no effect without "--watch-command".'); }
+        return;
+    }
+
+    Console.info('Watching (ingest only):', watchFolder);
+    filesWatching([watchFolder], function(event, _path){
+        executeWatchCommand(event, _path);
+    });
 }
 
 function executeWatchCommand(event, _path){
     if(!watchCommandModeON || !event || !_path){ return; }
 
-    let absolutePathChanged = path.resolve(_path);
-    let isInsideWatchFolder = absolutePathChanged.startsWith(path.resolve(watchFolder));
-
-    if(isInsideWatchFolder){
+    if(isInside(watchFolder, _path)){
         clearTimeout(watchCommandTimeout);
         watchCommandTimeout = setTimeout(async function(){
             Console.info('Watch command execution START:', watchCommand);
             try {
                 stopWatchCommand();
-                let watchCommandArgs = watchCommand.trim().split(/\s+/);
+                let watchCommandArgs = splitCommand(watchCommand);
                 if(!watchCommandArgs[0] || watchCommandArgs[0].length > 128){
                     throw new Error('Invalid resulting watch command: "' + watchCommandArgs[0] + '".');
                 }
 
-                if(shellModeON){
-                    watchCommandReference = spawn(watchCommand, undefined, { shell: true });
-                }
-                else {
-                    watchCommandReference = spawn(watchCommandArgs[0], (watchCommandArgs.length > 1 ? watchCommandArgs.slice(1) : undefined), { shell: false });
-                }
+                // Detached (POSIX) makes the command the leader of its own process group, so it can be stopped with all its children.
+                const spawnOptions = { detached: process.platform !== 'win32', windowsHide: true };
+                const child = shellModeON ?
+                    spawn(watchCommand, Object.assign({ shell: true }, spawnOptions)) :
+                    spawn(watchCommandArgs[0], watchCommandArgs.slice(1), Object.assign({ shell: false }, spawnOptions));
+                watchCommandReference = child;
 
-                watchCommandReference.stderr.setEncoding('utf8');
-                watchCommandReference.stderr.on('data', function(stderr){
+                child.on('error', function(e){
+                    Console.error('Watch command execution ERROR:', watchCommand, '>', e.message);
+                    if(!shellModeON){
+                        Console.warn('Use "--shell" for shell commands, pipelines, or scripts like "npm" on Windows.');
+                    }
+                });
+
+                child.stderr.setEncoding('utf8');
+                child.stderr.on('data', function(stderr){
                    Console.warn('Watch command stderr:', watchCommand, '>', (stderr.length > 128 ? stderr.slice(0, 125) + '...' : stderr));
                 });
 
-                watchCommandReference.stdout.setEncoding('utf8');
-                watchCommandReference.stdout.on('data', function(stdout){
+                child.stdout.setEncoding('utf8');
+                child.stdout.on('data', function(stdout){
                     Console.info('Watch command stdout:', watchCommand, '>', (stdout.length > 128 ? stdout.slice(0, 125) + '...' : stdout));
                 });
 
-                watchCommandReference.on('close', function(){
+                child.on('close', function(){
                     Console.warn('Watch command execution END:', watchCommand);
                 });
             }
@@ -1886,17 +2164,17 @@ function dxDevFrontendMode(){
         };
     }
 
-    // AbortController polyfill
+    // AbortController fallback (a no-op controller when AbortController is not available)
     var abortControllerId = 0;
     var abortControllers = {};
     function createSafeAbortController(){
+        var id = ++abortControllerId;
         if(typeof AbortController !== 'undefined'){
-            var id = ++abortControllerId;
-            abortControllers[id] = new AbortController();
-            return { controller: abortControllers[id], id: id };
+            var controller = new AbortController();
+            abortControllers[id] = controller;
+            return { controller: controller, id: id };
         }
-        // Fallback
-        return { controller: { signal: undefined, abort: function(){} } };
+        return { controller: { signal: undefined, abort: function(){} }, id: id };
     }
 
     console.info('${DXClient}', 'Console errors interceptor/wrapper.');
@@ -1905,17 +2183,20 @@ function dxDevFrontendMode(){
     console.error = function(){
         var args = Array.prototype.slice.call(arguments);
         var firstArg = args[0];
-        var haveSomething = firstArg.name || firstArg.message || firstArg.code || firstArg.stack || null;
-        var details = {
-            name: firstArg.name || 'unknown',
-            message: firstArg.message || 'no message',
-            code: firstArg.code || 'no code',
-            stack: firstArg.stack || 'no stack'
-        };
 
         originalError.apply(console, args);
-        if(haveSomething){
-            originalError.apply(console, ['${DXClient}', 'Interception details:', JSON.stringify(details)]);
+
+        if(firstArg && typeof firstArg === 'object'){
+            var haveSomething = firstArg.name || firstArg.message || firstArg.code || firstArg.stack || null;
+            if(haveSomething){
+                var details = {
+                    name: firstArg.name || 'unknown',
+                    message: firstArg.message || 'no message',
+                    code: firstArg.code || 'no code',
+                    stack: firstArg.stack || 'no stack'
+                };
+                originalError.apply(console, ['${DXClient}', 'Interception details:', JSON.stringify(details)]);
+            }
         }
     };
 
@@ -1923,32 +2204,34 @@ function dxDevFrontendMode(){
 
     var fetchMessageTimeout;
     var originalFetch = window.fetch;
-    window.fetch = function(URL, options){
-        options = options || {};
-        var timeoutId;
-        var requestAbortController;
-        var clearAbortAndTimeout = function(){};
-        if(typeof options.signal === 'undefined'){
-            requestAbortController = createSafeAbortController().controller;
-            options.signal = requestAbortController.signal;
-            timeoutId = setTimeout(requestAbortController.abort, ${DXServerClientFetchTimeout});
-            clearAbortAndTimeout = function(){
+    if(typeof originalFetch === 'function'){
+        window.fetch = function(resource, options){
+            // Requests that already have a signal (own options, or a Request object) keep their own cancellation.
+            if((typeof Request !== 'undefined' && resource instanceof Request) || (options && typeof options.signal !== 'undefined')){
+                return originalFetch(resource, options);
+            }
+
+            var init = {};
+            if(options){ for(var key in options){ if(Object.hasOwn(options, key)){ init[key] = options[key]; } } }
+
+            var safe = createSafeAbortController();
+            if(safe.controller.signal){ init.signal = safe.controller.signal; }
+
+            var timeoutId = setTimeout(function(){ safe.controller.abort(); }, ${DXServerClientFetchTimeout});
+            var clearAbortAndTimeout = function(){
                 clearTimeout(timeoutId);
-                delete abortControllers[requestAbortController.id];
+                delete abortControllers[safe.id];
                 clearTimeout(fetchMessageTimeout);
                 fetchMessageTimeout = setTimeout(function(){ console.warn('${DXClient}', 'DEV mode: aborts fetches exceeding ${DXServerClientFetchTimeout}ms. Use a custom fetch signal to override this timeout.'); }, 5000);
             };
-        }
 
-        var fetchPromise = originalFetch(URL, options);
-        fetchPromise.finally(function(){ clearAbortAndTimeout(); });
+            var fetchPromise = originalFetch(resource, init);
+            // Both handlers are given: the derived promise never rejects, so no extra "unhandledrejection" is produced.
+            fetchPromise.then(clearAbortAndTimeout, clearAbortAndTimeout);
 
-        if(requestAbortController && requestAbortController.id && requestAbortController.signal.aborted){
-            clearAbortAndTimeout();
-        }
-
-        return fetchPromise;
-    }.bind(window);
+            return fetchPromise;
+        };
+    }
 
     beforeReloadFunctions.push(function(){
         console.info('${DXClient}', 'Aborting fetch requests...');
@@ -2030,6 +2313,11 @@ function setEventsHeaders(res){
 
 function dxServerReadyOn(){
     Console.info('LISTENING on port:', port, 'exposed to the network:', '"' + networkExposedTo + '"');
+
+    if(devModeON && !isLoopbackAddress(networkExposedTo)){
+        Console.warn('DEV mode is reachable from the network: its endpoints can write files. Use "--network 127.0.0.1" to restrict it to this machine, or "--prod" for deployments.');
+    }
+
     openBrowser(getLocalhostURL());
 }
 

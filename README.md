@@ -1,19 +1,19 @@
 # DX Server
 
-**DX Server** is a high-performance, lightweight development/production server and build tool designed for modern frontend applications. It provides essential developer experience (DX) features out of the box, including hot-reloading, Single Page Application (SPA) routing, automatic SSL generation, and a unique Build Ingestion system to monitor your build processes directly from the browser.
+**DX Server** is a lightweight development/production server and build tool designed for modern frontend applications. It provides essential developer experience (DX) features out of the box, including live-reload, Single Page Application (SPA) routing, automatic SSL generation, and a unique Build Ingestion system to monitor your build processes directly from the browser.
 
 ## Key Features
 
-*   ⚡ **Hot-Reloading:** Automatic browser refresh on file changes via Server-Sent Events (SSE).
-*   🍦 **Vanilla / No-Bundler Mode:** Instant hot-reloading on any file edit (HTML, CSS, JS) without requiring a bundler, build step, or touching `index.html`.
-*   🧭 **SPA Support:** Smart fallback routing. Serves `index.html` automatically for client-side non static asset routes.
-*   🛠️ **Build Ingestion:** Pipe your bundler's `stdout` directly to DX Server. It analyzes the logs to show real-time build states (compiling, success, error) in the browser.
-*   🔒 **Zero-Config SSL:** Automatic self-signed SSL certificate generation using `mkcert`.
+*   ⚡ **Live-Reload:** Automatic full-page browser refresh on file changes via Server-Sent Events (SSE). (It reloads the page; it is not a module-level HMR.)
+*   🍦 **Vanilla / No-Bundler Mode:** Reload on any file edit (HTML, CSS, JS) without requiring a bundler, build step, or touching `index.html`.
+*   🧭 **SPA Support:** Smart fallback routing. Serves `index.html` automatically for client-side routes requested by the browser (navigations that accept `text/html`).
+*   🛠️ **Build Ingestion:** Pipe your bundler's `stdout` directly to DX Server. It analyzes the logs to detect build states (success, error) and reloads the browser accordingly. The piped output is still printed in your terminal.
+*   🔒 **Zero-Config SSL:** Automatic self-signed SSL certificate generation using `mkcert` (valid for `localhost`, `127.0.0.1` and `::1`). A local CA file is generated too, so you can trust it and remove the browser warning.
 *   🩹 **Frontend Patches:** Optional injection to wrap `console.error` (for better object inspection) and enforce global `fetch` timeouts (preventing browser freezes during reloads or infinite loops).
-*   🌍 **Language Management:** Built-in secure endpoint (`/dx-lang`) to update translation JSON files dynamically.
+*   🌍 **Language Management:** Built-in same-origin endpoint (`/dx-lang`) to update translation JSON files dynamically.
 *   🔄 **Watch Commands:** Execute custom CLI commands (like linters, bundlers, compilers) automatically when files change.
 *   🚪 **Auto Port-Killing:** Automatically frees up the requested port if it's already in use.
-*   🔌 **Custom Middleware Support:** Drop a `dx-server.middleware.js` file into your project root to handle custom HTTP headers, route rules, or API mocking, using Express syntax. Compatible with hot-reload.
+*   🔌 **Custom Middleware Support:** Drop a `dx-server.middleware.js` file into your project root to handle custom HTTP headers, route rules, or API mocking, using Express syntax. Compatible with live-reload.
 
 ## Requirements
 
@@ -44,27 +44,31 @@ npx dx-server-js --dev
 
 ## CLI Options & Configuration
 
+Run `npx dx-server-js --help` to print the list of options. Invalid options print the same list and exit with code `1`.
+
 ### 🚀 Server Modes
 | Flag | Description |
 | :--- | :--- |
-| `--dev` | **(Default)** Enables hot-reload, caching disabled, custom middleware hot-reload, and activates the `/dx-lang` endpoint. |
-| `--prod` | Disables hot-reload and lang endpoints. Enables gzip compression and static file caching. |
+| `--dev` | **(Default)** Enables live-reload, caching disabled, custom middleware reload, and activates the `/dx-lang` endpoint. |
+| `--prod` | Disables live-reload and lang endpoints. Enables gzip compression and static file caching. |
 | `--built` | Enables **Build Ingestion** mode to monitor another process's `stdout` piped into DX Server. |
-| `--ingest` | Enables *only* ingestion (does not start the HTTP server). Useful when combined with `--watch-command`. |
+| `--ingest` | Enables *only* ingestion (does not start the HTTP server). Requires `--built`. Useful when combined with `--watch` and `--watch-command`. |
 | `--no-bundler` | Enables **Vanilla / No-Bundler mode**. Reloads the browser immediately on any file change (HTML, CSS, JS) and supports multi-page websites. |
 
 ### ⚙️ General Settings
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--port <number>` | `80` / `443` | Set the server port. Defaults to `443` if `--ssl` is enabled, otherwise `80`. |
-| `--root <path>` | `cwd()` | Set the project root directory. |
+| `--port <number>` | `80` / `443` | Set the server port (1-65535, otherwise the server exits with code `1`). Defaults to `443` if `--ssl` is enabled, otherwise `80`. |
+| `--root <path>` | `cwd()` | Set the project root directory. The `www`, `src`, `lang` and `dx-server` folders and `dx-server.middleware.js` are resolved from it. |
 | `--public <path>` | `www` | Set the public folder to serve static files from. |
 | `--lang <path>` | `lang` | Set the directory for saving translation JSON files. |
-| `--network <ip>` | `::` | Bind to a specific network interface (e.g., `0.0.0.0` for local network access). |
-| `--silent` | `false` | Suppresses non-critical terminal logs (info/warn). |
+| `--network <ip>` | `::` | Bind to a specific network interface (e.g., `127.0.0.1` for this machine only, `0.0.0.0` for local network access). |
+| `--silent` | `false` | Suppresses non-critical terminal logs (info/warn) and the passthrough of the piped output in `--built` mode. |
 | `--no-kill` | `false` | Disables the automatic port-killing feature. Throws an error if the port is busy. |
-| `--cache <ms>` | `86400000` | Set `maxAge` (in ms) for static files caching. **Note:** This is automatically forced to `0` in `--dev` mode to prevent stale assets. |
-| `--fallback <path>` | `404.html` | Define a custom HTML fallback file to be served (with a 404 status) when a static asset is not found. By default it is served from the public folder. |
+| `--no-open` | `false` | Does not open the browser automatically. |
+| `--no-csp` | `false` | Does not send the `Content-Security-Policy` header (the default helmet policy in `--prod` blocks inline scripts and external CDNs). |
+| `--cache <ms>` | `86400000` in `--prod`, `0` in `--dev` | Set `maxAge` (in ms) for static files caching (not for `index.html`). In `--dev` it is `0` to prevent stale assets, unless you set it explicitly. |
+| `--fallback <path>` | `404.html` | Define a custom HTML fallback file to be served when no route or static file matches the request. It must be inside the public folder. The HTTP status is taken from the file name (see below). |
 | `--version` | - | Prints the current DX Server version and exits. |
 | `--help` | - | Prints the list of available server modes and options. |
 
@@ -72,62 +76,72 @@ npx dx-server-js --dev
 | Flag | Description |
 | :--- | :--- |
 | `--no-ssl` | **(Default)** Runs the server over HTTP. |
-| `--ssl` | Enables HTTPS. Automatically generates self-signed certificates using `mkcert` if custom certs are not provided. |
+| `--ssl` | Enables HTTPS. Automatically generates self-signed certificates using `mkcert` if custom certs are not provided. Generated certificates are renewed automatically when they are about to expire. |
 | `--cert <path>` | Path to a custom SSL `.crt` file (Requires `--ssl`). |
 | `--key <path>` | Path to a custom SSL `.key` file (Requires `--ssl`). |
+
+Generated files live in `dx-server/self-signed-certificates/`. The certificate is signed by a local CA that is **not** installed in your system. Browsers will show a warning until you trust `ca.crt` (from that same folder) in your OS or browser.
 
 ### 👁️ Watcher & Commands
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--watch <path>` | `src` | Directory to observe for hot-reloading and command execution. |
-| `--watch-command <cmd>` | - | CLI command to execute when files in the watch folder change. |
+| `--watch <path>` | - | Extra directory to observe for live-reload and command execution. Required by the other `--watch-*` options and by `--shell`. |
+| `--watch-command <cmd>` | - | CLI command to execute when files in the watch folder change. Quoted arguments are supported (`"node build.js --name 'a b'"`). |
 | `--watch-command-timeout <ms>`| `5000` | Debounce timeout (in ms) before executing the watch command. |
 | `--watch-depth <number>` | `5` | Maximum subdirectory depth the watcher will traverse. |
-| `--watch-ignore <string>` | `node_modules, .*`| Comma-separated list of files/folders/regex to ignore. |
-| `--shell` | `false` | Executes the `--watch-command` in shell mode. |
+| `--watch-ignore <string>` | `node_modules, .*`| Comma-separated list of regular expressions (matched against the full path) to ignore. The default ignores `node_modules` folders and dotfiles/dotfolders. |
+| `--shell` | `false` | Executes the `--watch-command` in shell mode (pipelines, shell builtins and `.cmd` scripts such as `npm` on Windows). Requires `--watch-command`. |
+
+The watch command is stopped (with all its child processes) and started again on every change. Options that need another option (for example `--watch-command` without `--watch`) print a warning and are ignored.
 
 ### 🏗️ Build Ingestion Options (Requires `--built`)
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--built-confirm-keywords <str>`| - | Comma-separated keywords to identify a successful build completion. |
-| `--built-error-keywords <str>` | `ERROR, bundle generation failed` | Comma-separated keywords to identify build errors. |
-| `--ingest-limit <bytes>` | `1048576` (1MB)| Maximum byte limit of `stdout` chunks retained for analysis. |
+| `--built-confirm-keywords <str>`| - | Comma-separated keywords (case-insensitive, regular expressions allowed) to identify a successful build completion. |
+| `--built-error-keywords <str>` | `ERROR, bundle generation failed` | Comma-separated keywords (case-insensitive, regular expressions allowed) to identify build errors. |
+| `--ingest-limit <bytes>` | `1048576` (1MB)| Maximum byte limit of `stdout` retained in `dx-server/_built.tmp.stdout`. |
 
 ### 🩹 Frontend Patching
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--frontend` | `false` | Injects polyfills and patches `fetch` and `console.error` into the client. |
-| `--frontend-fetch-timeout <ms>`| `30000` | Timeout (in ms) for the injected `fetch` interceptor. |
+| `--frontend` | `false` | Injects polyfills and patches `fetch` and `console.error` into the client (`--dev` only). |
+| `--frontend-fetch-timeout <ms>`| `30000` | Timeout (in ms) for the injected `fetch` interceptor. Requires `--frontend`. |
 
 ---
 
 ## Advanced Usage Guide
 
 ### 1. Build Ingestion (Piping `stdout`)
-DX Server can read the output of your bundler (Webpack, Vite, Esbuild, etc.) to understand the state of your build. If an error occurs during compilation, DX Server will catch it via regex/keywords and display an error overlay directly in your browser.
+DX Server can read the output of your bundler (Webpack, Vite, Esbuild, etc.) to understand the state of your build. If an error is detected, DX Server reports it in the terminal and shows the matched keyword in the browser while the entry point is unavailable.
 
 **Example:**
 ```bash
 # Pipe your bundler's watch mode into DX Server
 npm run build:watch | npx dx-server-js --built --built-error-keywords "SyntaxError, Failed to compile"
 ```
-*How it works:* The server buffers the `stdin` up to the `--ingest-limit`. It scans for error keywords. If found, it updates the internal state to `error` and notifies the connected browsers via SSE.
+*How it works:*
+*   The piped output is printed in your terminal as it arrives (unless `--silent`).
+*   Each new piece of output is scanned for the error and confirm keywords (plus a short tail of the previous output, so keywords split between two chunks are found). Old output is never analyzed again.
+*   An error keyword sets the state to `error`, and it stays in `error` while the bundler keeps printing. After a quiet period of about 1.5 seconds, the next output is considered a new build cycle. A confirm keyword always sets the state to `built`.
+*   Keywords are case-insensitive regular expressions: the default `ERROR` also matches text like "0 errors". Use `--built-confirm-keywords` (for example `"compiled successfully"`) or a stricter pattern such as `"\bERROR\b"` to avoid false positives.
+
+**Ingestion only (no HTTP server)** is useful to run a command when your sources change:
+```bash
+npm run build:watch | npx dx-server-js --built --ingest --watch ./src --watch-command "npm run lint" --shell
+```
 
 ### 2. Frontend Mode (`--frontend`)
-When enabled, DX Server injects a lightweight script into your `index.html` that provides:
-*   **Fetch Interceptor:** Automatically attaches an `AbortController` to all global `fetch` requests. If a request exceeds `--frontend-fetch-timeout`, it is aborted. This prevents the browser from freezing during browser reloads or development if you accidentally create an infinite fetch loop.
-*   **Console Error Wrapper:** Enhances `console.error` to stringify complex objects. This is highly useful for debugging on mobile devices or environments with limited object inspection capabilities.
-*   **Polyfills:** Injects safe fallbacks for `Object.hasOwn`, `Promise.prototype.finally`, and `AbortController`.
+When enabled (in `--dev`), DX Server injects a lightweight script into your pages that provides:
+*   **Fetch Interceptor:** Automatically attaches an `AbortController` to global `fetch` calls. If a request exceeds `--frontend-fetch-timeout`, it is aborted. This prevents the browser from freezing during reloads or development if you accidentally create an infinite fetch loop. Calls that already have their own `signal` (or are made with a `Request` object) keep their own cancellation.
+*   **Console Error Wrapper:** Enhances `console.error` to also print a JSON summary of error-like objects. This is highly useful for debugging on mobile devices or environments with limited object inspection capabilities.
+*   **Polyfills:** Injects safe fallbacks for `Object.hasOwn` and `Promise.prototype.finally`. When `AbortController` is not available, timeouts are simply not applied.
 
 ### 3. Language Management Endpoint
 In `--dev` mode, DX Server exposes a `POST /dx-lang` endpoint. This allows your frontend application (e.g., an admin panel or translation UI) to save JSON translation files directly to the disk.
 
-**Security Mechanism:**
-To prevent accidental data loss, the server compares the incoming JSON with the existing file. It will **reject (400 Bad Request)** the update if the new JSON contains fewer keys than the original file, ensuring you don't accidentally overwrite and delete translations.
-
 **Frontend Fetch Example:**
 ```javascript
-fetch('http://localhost/dx-lang', {
+fetch('/dx-lang', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -139,20 +153,24 @@ fetch('http://localhost/dx-lang', {
   })
 });
 ```
-*Additional Note:* This endpoint features strict Path-Traversal protection. It also implements an asynchronous Mutex lock to prevent Race Conditions if multiple keys are saved simultaneously, guaranteeing zero data corruption.
 
-*Payload Limit:* To prevent memory abuse, the JSON body payload is strictly limited to 1MB by default (equivalent to roughly 1,000 large key-value pairs).
+**Rules and responses:**
+*   New folders and files are created when they don't exist. Existing keys can be edited, and new keys can be added, but **no existing key can be removed**: a request with fewer keys than the file already has is rejected, so you don't accidentally delete translations.
+*   Status codes: `200` saved, `400` invalid body or keys missing, `403` rejected request, `409` the existing file is not a valid JSON object, `500` write error. Errors are never reported as success.
+*   Only `dir` and `code` names are used (no sub-paths): the file is always inside the lang folder.
+*   Writes are serialized (one at a time, a failed request never blocks the next ones) and atomic (temporary file + rename).
+*   *Origin protection:* because it writes to disk, the endpoint only accepts same-origin requests (no cross-site `Origin`/`Sec-Fetch-Site`) addressed to `localhost`, an IP address or the machine name (this blocks DNS-rebinding). Call it from the page served by DX Server, using the same host you opened it with.
+*   *Payload Limit:* the JSON body is limited to 1MB by default (equivalent to roughly 1,000 large key-value pairs).
 
 ### 4. SPA Routing Logic
-DX Server is optimized for Single Page Applications with a highly performant in-memory cache system. 
-When a request hits the server, a custom middleware evaluates it before serving static files:
-1. It checks the request path and the `Accept` header.
-2. If the request is looking for an asset (`image/*`, `css`, `js`, `json`), it bypasses the interceptor and continues static serving. If the asset is missing, it serves the `--fallback` file (e.g., `404.html`) with a `404 Not Found` status.
-3. If the request accepts `html` (a client-side route navigation), it intercepts the request.
-4. It reads `index.html`, injects the hot-reload script, and **caches the result in memory**. It will serve this cached version instantly on subsequent requests, only re-reading the file if its modification time changes.
+DX Server is optimized for Single Page Applications with an in-memory cache for the entry point. 
+When a `GET`/`HEAD` request hits the server, a middleware evaluates it before serving static files:
+1. It checks the request path and the `Accept` header. Requests for assets (paths with extensions other than `.html`/`.htm`) and requests that don't explicitly accept `text/html` (for example `fetch` or XHR calls with `Accept: */*`) bypass the interceptor and continue static serving. If the asset is missing, it serves the `--fallback` file (e.g., `404.html`) with its status.
+2. If the browser asks for an HTML document (a client-side route navigation), the middleware intercepts it. In `--dev`, existing `.html`/`.htm` files of the public folder are served with the hot-reload script injected; existing files without extension are served as normal static files.
+3. Any other route gets `index.html`: it is read, the hot-reload script is injected (`--dev` only), and the result is **cached in memory**. It is served instantly on subsequent requests, and only re-read if its modification time changes.
 
 ### 5. Custom Server Middleware (`dx-server.middleware.js`)
-DX Server allows you to extend its functionality by placing a `dx-server.middleware.js` file in your project root using Express syntax. This is useful for adding custom HTTP response headers, CORS policies, request logging, or mocking API endpoints.
+DX Server allows you to extend its functionality by placing a `dx-server.middleware.js` file in your project root (or in the `--root` folder) using Express syntax. This is useful for adding custom HTTP response headers, CORS policies, request logging, or mocking API endpoints.
 
 **Example `dx-server.middleware.js`:**
 ```javascript
@@ -169,10 +187,10 @@ module.exports = function customMiddleware(req, res, next) {
 ```
 
 **Key Features of Custom Middleware:**
-*   **Zero Configuration:** DX Server automatically detects and loads `dx-server.middleware.js` at startup if present.
-*   **Hot-Reloadable:** In `--dev` mode, Node's `require.cache` is automatically cleared for this file on every request. You can modify your middleware on the fly without restarting `dx-server`.
-*   **Protected Core:** Internal DX Server endpoints (`/dx-*` such as `/dx-update` or `/dx-client.js`) automatically bypass your custom middleware. This ensures that custom errors or unhandled redirects in user code will never break core features like Hot-Reloading.
-*   **Safe Execution:** User middleware runs inside a `try...catch` boundary. Any unhandled exception is logged to the terminal without crashing the server process.
+*   **Zero Configuration:** DX Server automatically detects and loads `dx-server.middleware.js`. In `--dev` the file is checked on every request (so you can create or remove it while running); in `--prod` it is detected at startup.
+*   **Reloadable:** In `--dev` mode, Node's `require.cache` is cleared for this file on every request. You can modify your middleware on the fly without restarting `dx-server`. Other modules that your middleware requires stay cached.
+*   **Protected Core:** Internal DX Server endpoints (`/dx-*` such as `/dx-update` or `/dx-client.js`) automatically bypass your custom middleware. This ensures that custom errors or unhandled redirects in user code will never break core features like Live-Reload.
+*   **Safe Execution:** User middleware runs inside a `try...catch` boundary, and rejected promises of `async` middleware are handled too. Any exception is logged to the terminal without crashing the server process, and the request continues to the next handler.
 
 ### 6. Vanilla Development (`--no-bundler`)
 If you are developing a traditional website with plain HTML, CSS, and JavaScript (without Webpack, Vite, or any build tool), use the `--no-bundler` flag.
@@ -183,25 +201,30 @@ npx dx-server-js --dev --no-bundler --port 3000
 ```
 
 **How it works:**
-*   **Universal Hot-Reload:** Any change made to `.css`, `.js`, or sub-page `.html` files immediately triggers a browser refresh (unlike bundler mode, which waits for `index.html` modification).
-*   **Multi-Page Injection:** DX Server automatically detects and injects the hot-reload client script into all requested `.html` and `.htm` files (e.g., `/about.html`, `/contact.html`), not just the root `index.html`.
+*   **Universal Live-Reload:** Any change made to `.css`, `.js`, or sub-page `.html` files immediately triggers a browser refresh (unlike bundler mode, which waits for `index.html` modification).
+*   **Multi-Page Injection:** DX Server automatically detects and injects the live-reload client script into all requested `.html` and `.htm` files (e.g., `/about.html`, `/contact.html`), not just the root `index.html`.
 
 ### 💡 Pro Tip: Smart HTTP Status Detection
 DX Server includes an intelligent feature for custom fallbacks: **it automatically detects the HTTP status code from your filename.**
 
-If you name your fallback file with a valid HTTP status code (e.g., `404.html`, `403.html`, or `500.html`), the server will parse that number and use it as the HTTP response status. This allows you to serve semantic error pages automatically without any extra configuration.
+If you name your fallback file with a valid HTTP status code (e.g., `404.html`, `403.html`, or `500.html`) and pass it with `--fallback`, the server will parse that number and use it as the HTTP response status. This allows you to serve semantic error pages automatically without any extra configuration.
 *   `404.html` → Server responds with `404 Not Found`.
 *   `403.html` → Server responds with `403 Forbidden`.
 *   `200.html` → Server responds with `200 OK` (useful for specific SPA configurations).
+
+```bash
+npx dx-server-js --prod --fallback 403.html
+```
 
 ---
 
 ## Internal Architecture & Files
 
 When running, DX Server creates a `dx-server` folder in your project root to manage its internal state:
-*   `dx-server/self-signed-certificates/`: Stores the `cert.crt` and `cert.key` generated by `mkcert`.
+*   `dx-server/self-signed-certificates/`: Stores the `cert.crt` and `cert.key` generated by `mkcert`, and the local CA (`ca.crt`) that signed them.
 *   `dx-server/_built.tmp`: Tracks the current build state (`compilation`, `built`, `error`).
-*   `dx-server/_error.tmp`: Stores the latest build error message to serve to the browser.
+*   `dx-server/_built.tmp.stdout`: The latest retained output of the ingested process.
+*   `dx-server/_error.tmp`: Stores the latest build error keyword to show in the browser.
 *   `dx-server/_browserOpen.tmp`: Prevents opening multiple browser tabs on rapid restarts.
 *   `dx-server.middleware.js`: Optional custom middleware in your project root.
 
@@ -211,12 +234,25 @@ When running, DX Server creates a `dx-server` folder in your project root to man
 
 ## ⚠️ Important Considerations
 
-1. **Network Binding (`--network`):** By default, DX Server binds to `::` (IPv6 Unspecified), which usually covers both IPv4 and IPv6 on modern OS. If you encounter network availability errors (`EADDRNOTAVAIL`), explicitly set it to IPv4 using `--network 0.0.0.0`.
-2. **Root Directory:** DX Server automatically uses your terminal's current directory (`process.cwd()`) as the root. If you need to run it from a different folder, use the `--root ./path/to/project` argument to ensure the `www`, `src`, and `lang` folders are resolved correctly.
-3. **Ports 80 / 443:** Binding to standard web ports on macOS and Linux usually requires `sudo` privileges. If you don't want to run as root, use a higher port (e.g., `--port 8080`).
+1. **Network Binding (`--network`):** By default, DX Server binds to `::` (IPv6 Unspecified), which usually covers both IPv4 and IPv6 on modern OS and makes the server reachable from your local network (a warning is printed in `--dev`). Use `--network 127.0.0.1` to restrict it to your machine. If you encounter network availability errors (`EADDRNOTAVAIL`), explicitly set it to IPv4 using `--network 0.0.0.0`.
+2. **Root Directory:** DX Server automatically uses your terminal's current directory (`process.cwd()`) as the root. If you need to run it from a different folder, use the `--root ./path/to/project` argument to ensure the `www`, `src`, `lang` and `dx-server` folders and the custom middleware are resolved correctly.
+3. **Ports 80 / 443:** Binding to standard web ports on Linux usually requires `sudo` privileges (and macOS on older versions). If you don't want to run as root, use a higher port (e.g., `--port 8080`).
 4. **Port Killing:** By default, DX Server aggressively frees up the requested port. If you have a Docker container or a database unexpectedly running on port 80, DX Server will kill it. Use `--no-kill` if you want traditional safe behavior.
-5. **Security:** CORS restrictions are disabled by default. The `--dev` mode exposes endpoints that allow disk writes (`/dx-lang`). **Never** use `--dev` in a publicly exposed network or a production environment. Always use `--prod` for deployments.
- 
+5. **Security:** CORS restrictions are disabled by default (any origin is reflected). The `--dev` mode exposes endpoints that allow disk writes (`/dx-lang`, protected against cross-origin requests but not authenticated). **Never** use `--dev` in a publicly exposed network or a production environment. Always use `--prod` for deployments.
+6. **Content-Security-Policy:** `--prod` sends the default [helmet](https://helmetjs.github.io/) policy, which blocks inline scripts and external resources. Use `--no-csp` if your application needs them.
+7. **Watch commands on Windows:** without `--shell`, the command is started directly, so scripts such as `npm` (`npm.cmd`) can't be launched. Use `--shell` for them.
+
+---
+
+## Development
+
+```bash
+npm install
+npm test
+```
+
+The test suite (`test/`) uses the built-in Node.js test runner and starts real DX Server processes on free ports.
+
 ---
 
 ## License
