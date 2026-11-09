@@ -1,9 +1,20 @@
 # Changelog
 
-## Unreleased
+## 2.3.6
 
-### Breaking
-- Node.js **22.22.0** or higher is required (it was 20.19.0, which reached its end of life in April 2026), because of `chalk` 6 and `chokidar` 6. Publish this as a major version (3.0.0). Options and behaviour are unchanged.
+### Added
+- GitHub Actions (`.github/workflows/ci.yml`): lint and tests on every push and pull request (Linux, Windows and macOS; Node.js 22.22 and 24).
+- Warning when `--watch` or `--watch-command` is used with `--prod`: the watcher only runs in `--dev` and in `--built --ingest`, so they were silently ignored.
+
+### Changed
+- The documentation (`README.md`) describes the `Content-Security-Policy` and the other security headers sent in `--dev` and in `--prod`, and that the watcher does not run in `--prod`.
+- Corrected the documentation of the requirements: Node.js 22.22.0 or higher (no mention of 20.19), and the CI matrix.
+- `globals` (development dependency) updated to 17.14.0.
+
+## 2.3.5
+
+### Requirements
+- Node.js **22.22.0** or higher is required (it was 20.19.0, which reached its end of life in April 2026), because of `chalk` 6 and `chokidar` 6. Options and behaviour are unchanged.
 
 ### Fixed
 - `--prod`: gzip compression was never applied (the middleware was registered after the handlers that end the response).
@@ -34,12 +45,11 @@
 
 ### Added
 - `--cors <origins>` to restrict the origins allowed by CORS (by default any origin is still reflected).
-- Tests for live-reload, `--no-bundler`, `--ssl`, `--cors` and the security fixes; ESLint (`npm run lint`); GitHub Actions (Linux, Windows, macOS; Node.js 20.19, 22, 24); `prepublishOnly` runs lint and tests; `SECURITY.md`.
+- Tests (`npm test`) for live-reload, `--no-bundler`, `--ssl`, `--cors` and the security fixes; ESLint (`npm run lint`); `prepublishOnly` runs lint and tests; `SECURITY.md`; `files` in `package.json`; `CHANGELOG.md`.
 - `--no-open` (do not open the browser) and `--no-csp` (disable `Content-Security-Policy`).
 - `/dx-lang` only accepts same-origin requests addressed to a trusted host name.
-- Warnings for options that are ignored because the option they depend on is missing, and for `--dev` reachable from the network.
+- Warnings for options that are ignored because the option they depend on is missing and for `--dev` reachable from the network.
 - Formatted `--help` with every option.
-- Tests (`npm test`), `files` in `package.json`, `CHANGELOG.md`.
 
 ### Changed
 - The version is read from `package.json` (it was duplicated in the code).

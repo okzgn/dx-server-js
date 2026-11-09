@@ -152,6 +152,16 @@ describe('command line', function(){
         assert.match(result.stderr, /Args error/);
     });
 
+    it('warns that --watch-command is ignored with --prod', async function(){
+        const server = await startServer(root, ['--prod', '--watch', root, '--watch-command', 'node -v']);
+        try {
+            assert.match(server.output(), /do not run with "--prod"/);
+        }
+        finally {
+            await stopServer(server);
+        }
+    });
+
     it('an invalid port exits with 1', function(){
         const result = run(root, ['--port', 'abc', '--no-open']);
         assert.equal(result.status, 1);

@@ -17,7 +17,7 @@
 
 ## Requirements
 
-*   **Node.js:** v22.22.0 or higher (DX Server 2.x supports Node.js 20.19).
+*   **Node.js:** v22.22.0 or higher.
 
 ## Installation
 
@@ -67,7 +67,7 @@ Run `npx dx-server-js --help` to print the list of options. Invalid options prin
 | `--silent` | `false` | Suppresses non-critical terminal logs (info/warn) and the passthrough of the piped output in `--built` mode. |
 | `--no-kill` | `false` | Disables the automatic port-killing feature. Throws an error if the port is busy. |
 | `--no-open` | `false` | Does not open the browser automatically. |
-| `--no-csp` | `false` | Does not send the `Content-Security-Policy` header (the default helmet policy in `--prod` blocks inline scripts and external CDNs). |
+| `--no-csp` | `false` | Does not send the `Content-Security-Policy` header (the policy of `--prod` blocks inline scripts and external CDNs; the one of `--dev` blocks external CDN scripts and `eval`). See [Content-Security-Policy](#7-content-security-policy-and-security-headers). |
 | `--cache <ms>` | `86400000` in `--prod`, `0` in `--dev` | Set `maxAge` (in ms) for static files caching (not for `index.html`). In `--dev` it is `0` to prevent stale assets, unless you set it explicitly. |
 | `--fallback <path>` | `404.html` | Define a custom HTML fallback file to be served when no route or static file matches the request. It must be inside the public folder. The HTTP status is taken from the file name (see below). |
 | `--version` | - | Prints the current DX Server version and exits. |
@@ -94,6 +94,8 @@ Generated files live in `dx-server/self-signed-certificates/`. The certificate i
 | `--shell` | `false` | Executes the `--watch-command` in shell mode (pipelines, shell builtins and `.cmd` scripts such as `npm` on Windows). Requires `--watch-command`. |
 
 The watch command is stopped (with all its child processes) and started again on every change. Options that need another option (for example `--watch-command` without `--watch`) print a warning and are ignored.
+
+The watcher only runs in `--dev` and in `--built --ingest`. With `--prod` there is no watcher: `--watch` and `--watch-command` print a warning and are ignored.
 
 ### 🏗️ Build Ingestion Options (Requires `--built`)
 | Flag | Default | Description |
@@ -205,6 +207,30 @@ npx dx-server-js --dev --no-bundler --port 3000
 *   **Universal Live-Reload:** Any change made to `.css`, `.js`, or sub-page `.html` files immediately triggers a browser refresh (unlike bundler mode, which waits for `index.html` modification).
 *   **Multi-Page Injection:** DX Server automatically detects and injects the live-reload client script into all requested `.html` and `.htm` files (e.g., `/about.html`, `/contact.html`), not just the root `index.html`.
 
+### 7. Content-Security-Policy and Security Headers
+DX Server sends the security headers of [helmet](https://helmetjs.github.io/) in `--dev` and in `--prod`, including a `Content-Security-Policy` (CSP). **The policy is different in each mode**, and both are strict by default:
+
+| Directive | `--prod` | `--dev` |
+| :--- | :--- | :--- |
+| `script-src` | `'self'` (no inline scripts, no external CDNs, no `eval`) | `'self' 'unsafe-inline'` (inline scripts allowed; external CDNs and `eval` blocked) |
+| `style-src` | `'self' https: 'unsafe-inline'` (inline styles and external `https:` stylesheets allowed) | `'self' 'unsafe-inline'` (external stylesheets, such as the Google Fonts CSS, blocked) |
+| `img-src` | `'self' data:` | `'self' data: blob:` |
+| `font-src` | `'self' https: data:` | `'self' https: data:` |
+| `connect-src` | `'self'` (inherited from `default-src`: `fetch`/XHR/WebSocket to another origin are blocked) | `'self' *` (any origin) |
+| Other | `default-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'self'`, `script-src-attr 'none'` (inline event handlers such as `onclick="..."` are blocked) | same |
+
+`upgrade-insecure-requests` is only sent with `--ssl`, and `Strict-Transport-Security` only with `--prod --ssl`.
+
+**Typical symptoms** of the policy (the browser console shows `Refused to ... because it violates the following Content Security Policy directive`):
+*   A `<script src="https://cdn...">` or an inline `<script>` that does not load/run in `--prod`.
+*   A bundle that fails in `--dev` because the bundler emits `eval` (for example Webpack with `devtool: 'eval'`): use another `devtool` (such as `source-map`) or `--no-csp`.
+*   Calls from your frontend to an API on another origin (for example `http://localhost:4000`) that fail in `--prod`.
+*   Images from other hosts, or `blob:` images in `--prod`, that are not shown.
+
+**How to fix it:** adjust your application (move inline scripts to files served by the public folder) or use `--no-csp`, which removes only the `Content-Security-Policy` header. If you prefer a custom policy, `--no-csp` plus a `Content-Security-Policy` header set in `dx-server.middleware.js` works too.
+
+The other helmet headers are always sent, also with `--no-csp`: `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `Origin-Agent-Cluster`. Note that `Cross-Origin-Resource-Policy: same-origin` prevents other origins from embedding your files with `<img>` or `<script>` (`fetch` with CORS is controlled by `--cors`). Your `dx-server.middleware.js` can override any of them with `res.setHeader`.
+
 ### 💡 Pro Tip: Smart HTTP Status Detection
 DX Server includes an intelligent feature for custom fallbacks: **it automatically detects the HTTP status code from your filename.**
 
@@ -242,7 +268,7 @@ These files are never served, even if the public folder contains them (for examp
 3. **Ports 80 / 443:** Binding to standard web ports on Linux usually requires `sudo` privileges (and macOS on older versions). If you don't want to run as root, use a higher port (e.g., `--port 8080`).
 4. **Port Killing:** By default, DX Server aggressively frees up the requested port. If you have a Docker container or a database unexpectedly running on port 80, DX Server will kill it. Use `--no-kill` if you want traditional safe behavior.
 5. **Security:** CORS restrictions are disabled by default for your files (any origin is reflected; use `--cors` to restrict them), but never for the internal `/dx-*` endpoints. The `--dev` mode exposes endpoints that allow disk writes (`/dx-lang`, protected against cross-origin requests but not authenticated). The live-reload token only prevents other sites from using the event stream: it is not an authentication. **Never** use `--dev` in a publicly exposed network or a production environment. Always use `--prod` for deployments. See [SECURITY.md](SECURITY.md).
-6. **Content-Security-Policy:** `--prod` sends the default [helmet](https://helmetjs.github.io/) policy, which blocks inline scripts and external resources. Use `--no-csp` if your application needs them. Without `--ssl`, `upgrade-insecure-requests` is removed from the policy (it would break a server that only listens on HTTP), and `Strict-Transport-Security` is only sent with `--prod --ssl` (in `--dev` it would force `localhost` to HTTPS on every port of your browser).
+6. **Content-Security-Policy:** both `--prod` (default [helmet](https://helmetjs.github.io/) policy: blocks inline scripts and external scripts, API calls and images) and `--dev` (allows inline scripts, blocks external CDN scripts and `eval`) send a policy. Use `--no-csp` if your application needs more freedom. Without `--ssl`, `upgrade-insecure-requests` is removed from the policy (it would break a server that only listens on HTTP), and `Strict-Transport-Security` is only sent with `--prod --ssl` (in `--dev` it would force `localhost` to HTTPS on every port of your browser). Details: [Content-Security-Policy and Security Headers](#7-content-security-policy-and-security-headers).
 7. **Errors:** request errors (invalid JSON bodies, failing custom middleware) are logged in the terminal and answered with their status code only, never with stack traces.
 8. **Watch commands on Windows:** without `--shell`, the command is started directly, so scripts such as `npm` (`npm.cmd`) can't be launched. Use `--shell` for them.
 

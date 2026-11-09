@@ -615,6 +615,11 @@ function warnIgnoredArguments(){
             Console.warn('"--' + flag + '" requires "--' + requires + '" and it will be ignored.');
         }
     }
+
+    // The watcher (live-reload and watch command) is only started in "--dev" and in "--built --ingest".
+    if(args.prod && !(args.built && args.ingest) && (args.watch || args['watch-command'])){
+        Console.warn('"--watch" and "--watch-command" do not run with "--prod" (the watcher only runs in "--dev" or with "--built --ingest") and they will be ignored.');
+    }
 }
 
 (async function main(){
