@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.7
+
+### Fixed
+- `--public` pointing to the project root: DX Server internal files (`dx-server/` and `dx-server.middleware.js`) could be served when the configured paths went through a symlink (e.g. `/var` → `/private/var` on macOS). Paths are now compared after resolving symlinks.
+
 ## 2.3.6
 
 ### Added

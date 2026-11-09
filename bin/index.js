@@ -728,8 +728,27 @@ function stopWatchCommand(){
     }
 }
 
+// Resolves symlinks (e.g. "/var" -> "/private/var" on macOS) of the longest existing part of the path, so paths
+// written differently but pointing to the same place can be compared.
+function resolveRealPath(target){
+    let current = path.resolve(target);
+    const missing = [];
+
+    while(true){
+        try {
+            return path.join.apply(path, [fs.realpathSync.native(current)].concat(missing));
+        }
+        catch(e){
+            const parent = path.dirname(current);
+            if(parent === current){ return path.resolve(target); }
+            missing.unshift(path.basename(current));
+            current = parent;
+        }
+    }
+}
+
 function isInside(parent, child){
-    const relative = path.relative(path.resolve(parent), path.resolve(child));
+    const relative = path.relative(resolveRealPath(parent), resolveRealPath(child));
     return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
 }
 
